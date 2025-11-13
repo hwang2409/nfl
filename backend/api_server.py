@@ -19,16 +19,41 @@ import os
 from contextlib import asynccontextmanager
 
 # Add src to path
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 import pandas as pd
-from src.train_model_v2 import SimpleNFLModel
-from src.predict_upcoming_v2 import predict_upcoming_v2 as predict_upcoming_improved
-from src.database import (
-    init_db, get_predictions, get_game_prediction, get_team_predictions,
-    save_predictions, db_session
-)
-from data_collection import get_current_season, load_game_data
+
+# Try to import model components - handle gracefully if dependencies are missing
+try:
+    from train_model_v2 import SimpleNFLModel
+    from predict_upcoming_v2 import predict_upcoming_v2 as predict_upcoming_improved
+    MODEL_AVAILABLE = True
+except (ImportError, Exception) as e:
+    print(f"⚠️  Model imports failed: {e}")
+    print("  Server will start but predictions will not be available")
+    SimpleNFLModel = None
+    predict_upcoming_improved = None
+    MODEL_AVAILABLE = False
+
+try:
+    from database import (
+        init_db, get_predictions, get_game_prediction, get_team_predictions,
+        save_predictions, db_session
+    )
+    DATABASE_AVAILABLE = True
+except ImportError as e:
+    print(f"⚠️  Database imports failed: {e}")
+    DATABASE_AVAILABLE = False
+
+try:
+    from data_collection import get_current_season, load_game_data
+except ImportError as e:
+    print(f"⚠️  Data collection imports failed: {e}")
+    def get_current_season():
+        from datetime import datetime
+        now = datetime.now()
+        return now.year - 1 if now.month < 9 else now.year
+    load_game_data = None
 
 # Configuration
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
@@ -62,26 +87,33 @@ async def lifespan(app: FastAPI):
         redis_client = None
     
     # Load model
-    try:
-        model_path = Path(MODEL_PATH)
-        if not model_path.exists():
-            raise FileNotFoundError(f"Model not found at {model_path}")
-        
-        model_instance = SimpleNFLModel.load(model_path)
-        model_version = model_path.stat().st_mtime  # Use file mtime as version
-        print(f"✓ Model loaded: {model_path}")
-        print(f"  Threshold: {model_instance.threshold:.3f}")
-    except Exception as e:
-        print(f"✗ Model loading failed: {e}")
+    if MODEL_AVAILABLE and SimpleNFLModel is not None:
+        try:
+            model_path = Path(MODEL_PATH)
+            if not model_path.exists():
+                raise FileNotFoundError(f"Model not found at {model_path}")
+            
+            model_instance = SimpleNFLModel.load(model_path)
+            model_version = model_path.stat().st_mtime  # Use file mtime as version
+            print(f"✓ Model loaded: {model_path}")
+            print(f"  Threshold: {model_instance.threshold:.3f}")
+        except Exception as e:
+            print(f"✗ Model loading failed: {e}")
+            model_instance = None
+    else:
+        print("⚠️  Model not available (dependencies missing)")
         model_instance = None
     
     # Initialize database
-    try:
-        init_db(create_tables=True)
-        print("✓ Database initialized")
-    except Exception as e:
-        print(f"⚠️  Database initialization failed: {e}")
-        print("  API will continue but predictions won't be persisted")
+    if DATABASE_AVAILABLE:
+        try:
+            init_db(create_tables=True)
+            print("✓ Database initialized")
+        except Exception as e:
+            print(f"⚠️  Database initialization failed: {e}")
+            print("  API will continue but predictions won't be persisted")
+    else:
+        print("⚠️  Database not available")
     
     yield
     
@@ -132,13 +164,8 @@ class ModelStatus(BaseModel):
 
 # Dependency functions
 def get_model():
-    """Get model instance"""
-    if model_instance is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Model not loaded. Please check server logs."
-        )
-    return model_instance
+    """Get model instance (optional)"""
+    return model_instance  # Return None if not loaded, don't raise error
 
 
 def get_redis():
@@ -258,18 +285,19 @@ async def get_upcoming_predictions(
         return cached
     
     # Check database
-    try:
-        db_predictions_df = get_predictions(
-            season=season,
-            week=week,
-            min_confidence=min_confidence if min_confidence > 0 else None
-        )
-        
-        if len(db_predictions_df) > 0:
-            # Convert to response format
-            predictions = []
-            for _, row in db_predictions_df.iterrows():
-                predictions.append({
+    if DATABASE_AVAILABLE:
+        try:
+            db_predictions_df = get_predictions(
+                season=season,
+                week=week,
+                min_confidence=min_confidence if min_confidence > 0 else None
+            )
+            
+            if len(db_predictions_df) > 0:
+                # Convert to response format
+                predictions = []
+                for _, row in db_predictions_df.iterrows():
+                    predictions.append({
                     "season": int(row['season']),
                     "week": int(row['week']),
                     "home_team": row['home_team'],
@@ -281,24 +309,33 @@ async def get_upcoming_predictions(
                     "game_date": str(row.get('gameday', '')) if pd.notna(row.get('gameday')) else None,
                     "gametime": str(row.get('gametime', '')) if pd.notna(row.get('gametime')) else None
                 })
-            
-            # Cache results
-            set_cache(cache_key, predictions, ttl=3600, redis_client=redis_client)
-            
-            # Filter by confidence if needed
-            if min_confidence > 0:
-                filtered = [
-                    p for p in predictions 
-                    if p.get('confidence', 0) >= min_confidence
-                ]
-                return filtered
-            
-            return predictions
-    except Exception as e:
-        print(f"Database query failed: {e}")
-        # Continue to generate predictions
+                
+                # Cache results
+                set_cache(cache_key, predictions, ttl=3600, redis_client=redis_client)
+                
+                # Filter by confidence if needed
+                if min_confidence > 0:
+                    filtered = [
+                        p for p in predictions 
+                        if p.get('confidence', 0) >= min_confidence
+                    ]
+                    return filtered
+                
+                return predictions
+        except Exception as e:
+            print(f"Database query failed: {e}")
+            # Continue to generate predictions
+    else:
+        print("Database not available, skipping database query")
     
     # Generate predictions (cache miss and database miss)
+    # Check if model is available
+    if model is None or predict_upcoming_improved is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Model not loaded. The prediction model is not available. Please check server logs or contact the administrator."
+        )
+    
     try:
         predictions_df = predict_upcoming_improved(
             season=season,
@@ -364,7 +401,7 @@ async def get_game_prediction(
         return cached
     
     # Check database first
-    if season is not None and week is not None:
+    if season is not None and week is not None and DATABASE_AVAILABLE:
         try:
             db_pred = get_game_prediction(season, week, home_team, away_team)
             if db_pred:
@@ -375,6 +412,13 @@ async def get_game_prediction(
             print(f"Database query failed: {e}")
     
     # Get from upcoming predictions (will check cache/db/generate)
+    # Check if model is available before calling
+    if model is None or predict_upcoming_improved is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Model not loaded. The prediction model is not available. Please check server logs or contact the administrator."
+        )
+    
     predictions = await get_upcoming_predictions(
         season=season,
         week=week,
@@ -406,28 +450,36 @@ async def get_team_upcoming_predictions(
 ):
     """Get all upcoming predictions for a specific team"""
     # Try database first
-    try:
-        db_predictions_df = get_team_predictions(team, season=season)
-        if len(db_predictions_df) > 0:
-            predictions = []
-            for _, row in db_predictions_df.iterrows():
-                predictions.append({
-                    "season": int(row['season']),
-                    "week": int(row['week']),
-                    "home_team": row['home_team'],
-                    "away_team": row['away_team'],
-                    "home_win_probability": float(row['home_win_probability']),
-                    "away_win_probability": float(row['away_win_probability']),
-                    "predicted_winner": row['predicted_winner'],
-                    "confidence": float(row['confidence']),
-                    "game_date": str(row.get('gameday', '')) if pd.notna(row.get('gameday')) else None,
-                    "gametime": str(row.get('gametime', '')) if pd.notna(row.get('gametime')) else None
-                })
-            return predictions
-    except Exception as e:
-        print(f"Database query failed: {e}")
+    if DATABASE_AVAILABLE:
+        try:
+            db_predictions_df = get_team_predictions(team, season=season)
+            if len(db_predictions_df) > 0:
+                predictions = []
+                for _, row in db_predictions_df.iterrows():
+                    predictions.append({
+                        "season": int(row['season']),
+                        "week": int(row['week']),
+                        "home_team": row['home_team'],
+                        "away_team": row['away_team'],
+                        "home_win_probability": float(row['home_win_probability']),
+                        "away_win_probability": float(row['away_win_probability']),
+                        "predicted_winner": row['predicted_winner'],
+                        "confidence": float(row['confidence']),
+                        "game_date": str(row.get('gameday', '')) if pd.notna(row.get('gameday')) else None,
+                        "gametime": str(row.get('gametime', '')) if pd.notna(row.get('gametime')) else None
+                    })
+                return predictions
+        except Exception as e:
+            print(f"Database query failed: {e}")
     
     # Fallback to general predictions endpoint
+    # Check if model is available before calling
+    if model is None or predict_upcoming_improved is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Model not loaded. The prediction model is not available. Please check server logs or contact the administrator."
+        )
+    
     predictions = await get_upcoming_predictions(
         season=season,
         week=None,

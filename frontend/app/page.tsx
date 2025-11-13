@@ -4,7 +4,158 @@ import { useState, useEffect } from 'react';
 import { predictionsApi, Prediction } from '@/lib/api';
 import PredictionCard from '@/components/PredictionCard';
 import LoadingSpinner from '@/components/LoadingSpinner';
-import ErrorMessage from '@/components/ErrorMessage';
+import ErrorState from '@/components/ErrorState';
+import EmptyState from '@/components/EmptyState';
+import PredictionAccuracyCard from '@/components/PredictionAccuracyCard';
+import { Filter, Search } from 'lucide-react';
+
+// Placeholder predictions for when API is unavailable
+const placeholderPredictions: Prediction[] = [
+  {
+    season: 2024,
+    week: 15,
+    game_date: '2024-12-15',
+    gametime: '4:25 PM EST',
+    home_team: 'KC',
+    away_team: 'BUF',
+    home_win_probability: 0.58,
+    away_win_probability: 0.42,
+    predicted_winner: 'KC',
+    confidence: 0.82,
+  },
+  {
+    season: 2024,
+    week: 15,
+    game_date: '2024-12-15',
+    gametime: '8:20 PM EST',
+    home_team: 'SF',
+    away_team: 'DAL',
+    home_win_probability: 0.65,
+    away_win_probability: 0.35,
+    predicted_winner: 'SF',
+    confidence: 0.78,
+  },
+  {
+    season: 2024,
+    week: 15,
+    game_date: '2024-12-15',
+    gametime: '1:00 PM EST',
+    home_team: 'PHI',
+    away_team: 'GB',
+    home_win_probability: 0.52,
+    away_win_probability: 0.48,
+    predicted_winner: 'PHI',
+    confidence: 0.71,
+  },
+  {
+    season: 2024,
+    week: 15,
+    game_date: '2024-12-15',
+    gametime: '1:00 PM EST',
+    home_team: 'BAL',
+    away_team: 'MIA',
+    home_win_probability: 0.61,
+    away_win_probability: 0.39,
+    predicted_winner: 'BAL',
+    confidence: 0.85,
+  },
+  {
+    season: 2024,
+    week: 15,
+    game_date: '2024-12-16',
+    gametime: '1:00 PM EST',
+    home_team: 'DET',
+    away_team: 'TB',
+    home_win_probability: 0.55,
+    away_win_probability: 0.45,
+    predicted_winner: 'DET',
+    confidence: 0.73,
+  },
+  {
+    season: 2024,
+    week: 15,
+    game_date: '2024-12-16',
+    gametime: '4:25 PM EST',
+    home_team: 'CIN',
+    away_team: 'CLE',
+    home_win_probability: 0.48,
+    away_win_probability: 0.52,
+    predicted_winner: 'CLE',
+    confidence: 0.69,
+  },
+  {
+    season: 2024,
+    week: 15,
+    game_date: '2024-12-16',
+    gametime: '4:05 PM EST',
+    home_team: 'LAC',
+    away_team: 'DEN',
+    home_win_probability: 0.57,
+    away_win_probability: 0.43,
+    predicted_winner: 'LAC',
+    confidence: 0.76,
+  },
+  {
+    season: 2024,
+    week: 15,
+    game_date: '2024-12-16',
+    gametime: '4:25 PM EST',
+    home_team: 'SEA',
+    away_team: 'ARI',
+    home_win_probability: 0.63,
+    away_win_probability: 0.37,
+    predicted_winner: 'SEA',
+    confidence: 0.81,
+  },
+  {
+    season: 2024,
+    week: 15,
+    game_date: '2024-12-17',
+    gametime: '8:15 PM EST',
+    home_team: 'NYJ',
+    away_team: 'NE',
+    home_win_probability: 0.45,
+    away_win_probability: 0.55,
+    predicted_winner: 'NE',
+    confidence: 0.68,
+  },
+  {
+    season: 2024,
+    week: 15,
+    game_date: '2024-12-17',
+    gametime: '1:00 PM EST',
+    home_team: 'JAX',
+    away_team: 'HOU',
+    home_win_probability: 0.54,
+    away_win_probability: 0.46,
+    predicted_winner: 'JAX',
+    confidence: 0.74,
+  },
+  {
+    season: 2024,
+    week: 15,
+    game_date: '2024-12-17',
+    gametime: '1:00 PM EST',
+    home_team: 'PIT',
+    away_team: 'IND',
+    home_win_probability: 0.50,
+    away_win_probability: 0.50,
+    predicted_winner: 'PIT',
+    confidence: 0.70,
+  },
+  {
+    season: 2024,
+    week: 15,
+    game_date: '2024-12-17',
+    gametime: '1:00 PM EST',
+    home_team: 'NO',
+    away_team: 'ATL',
+    home_win_probability: 0.56,
+    away_win_probability: 0.44,
+    predicted_winner: 'NO',
+    confidence: 0.72,
+  },
+];
 
 export default function Home() {
   const [predictions, setPredictions] = useState<Prediction[]>([]);
@@ -17,6 +168,8 @@ export default function Home() {
     connected: false,
     modelLoaded: false,
   });
+  const [searchQuery, setSearchQuery] = useState('');
+  const [showFilters, setShowFilters] = useState(false);
 
   const loadPredictions = async () => {
     setLoading(true);
@@ -24,13 +177,15 @@ export default function Home() {
     try {
       // Check API health first
       try {
-        await predictionsApi.healthCheck();
+        const health = await predictionsApi.healthCheck();
         setApiStatus((prev) => ({ ...prev, connected: true }));
 
         const status = await predictionsApi.getModelStatus();
         setApiStatus((prev) => ({ ...prev, modelLoaded: status.model_loaded }));
-      } catch (err) {
+      } catch (err: any) {
         console.warn('API health check failed:', err);
+        setApiStatus((prev) => ({ ...prev, connected: false }));
+        // Don't return early - still try to show error message
       }
 
       const data = await predictionsApi.getUpcoming(
@@ -38,10 +193,23 @@ export default function Home() {
         week,
         minConfidence > 0 ? minConfidence : undefined
       );
-      setPredictions(data);
+      // If API returns empty array or no data, use placeholders
+      if (!data || data.length === 0) {
+        setError('No predictions available from API. Showing sample data.');
+        setPredictions(placeholderPredictions);
+      } else {
+        setPredictions(data);
+      }
     } catch (err: any) {
-      setError(err.response?.data?.detail || err.message || 'Failed to load predictions');
+      // Handle different error types
+      const errorMessage = err.response?.data?.detail 
+        || err.response?.data?.message 
+        || err.message 
+        || 'Failed to load predictions';
+      setError(errorMessage);
       console.error('Error loading predictions:', err);
+      // Use placeholder data when API fails
+      setPredictions(placeholderPredictions);
     } finally {
       setLoading(false);
     }
@@ -53,135 +221,179 @@ export default function Home() {
 
   const currentYear = new Date().getFullYear();
   const seasons = Array.from({ length: 5 }, (_, i) => currentYear - i);
+  const weeks = Array.from({ length: 18 }, (_, i) => i + 1);
+
+  // Filter predictions by search query, week, and confidence
+  const filteredPredictions = predictions.filter((prediction) => {
+    // Search filter
+    if (searchQuery) {
+      const query = searchQuery.toLowerCase();
+      if (
+        !prediction.home_team.toLowerCase().includes(query) &&
+        !prediction.away_team.toLowerCase().includes(query)
+      ) {
+        return false;
+      }
+    }
+    
+    // Week filter
+    if (week !== undefined && prediction.week !== week) {
+      return false;
+    }
+    
+    // Confidence filter
+    if (minConfidence > 0 && prediction.confidence < minConfidence) {
+      return false;
+    }
+    
+    return true;
+  });
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      {/* Header */}
-      <header className="bg-nfl-primary text-white shadow-lg">
-        <div className="container mx-auto px-4 py-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <h1 className="text-3xl font-bold">NFL Game Predictions</h1>
-              <p className="text-nfl-accent mt-1">AI-powered predictions with confidence scores</p>
+    <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
+      {/* API Status and Filters Bar */}
+      <div className="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
+          <div className="flex flex-col sm:flex-row gap-4">
+            {/* API Status */}
+            <div className="flex items-center gap-2">
+              <div
+                className={`w-2 h-2 rounded-full ${
+                  apiStatus.connected ? 'bg-green-500' : 'bg-red-500'
+                }`}
+              ></div>
+              <span className="text-xs text-gray-600 dark:text-gray-400">
+                {apiStatus.connected ? 'Connected' : 'Disconnected'}
+              </span>
             </div>
-            <div className="flex items-center gap-4">
-              <div className="text-right">
-                <div className="text-sm opacity-90">API Status</div>
-                <div className="flex items-center gap-2 mt-1">
-                  <div
-                    className={`w-3 h-3 rounded-full ${
-                      apiStatus.connected ? 'bg-green-400' : 'bg-red-400'
-                    }`}
-                  ></div>
-                  <span className="text-sm">
-                    {apiStatus.connected ? 'Connected' : 'Disconnected'}
-                  </span>
-                </div>
+            
+            {/* Search */}
+            <div className="flex-1 relative">
+              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400 dark:text-gray-500" />
+              <input
+                type="text"
+                placeholder="Search teams..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full pl-10 pr-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-nfl-primary dark:focus:ring-nfl-accent focus:border-transparent text-sm"
+              />
+            </div>
+
+            {/* Filters Toggle */}
+            <button
+              onClick={() => setShowFilters(!showFilters)}
+              className="flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors whitespace-nowrap"
+            >
+              <Filter className="w-4 h-4" />
+              <span>Filters</span>
+            </button>
+          </div>
+
+          {/* Filters */}
+          {showFilters && (
+            <div className="flex flex-wrap items-center gap-4 mt-4 pt-4 border-t border-gray-200 dark:border-gray-700">
+              <div className="flex items-center gap-2">
+                <label className="text-sm text-gray-600 dark:text-gray-400 whitespace-nowrap">Season:</label>
+                <select
+                  value={season}
+                  onChange={(e) => setSeason(Number(e.target.value))}
+                  className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-nfl-primary dark:focus:ring-nfl-accent focus:border-transparent text-sm"
+                >
+                  {seasons.map((s) => (
+                    <option key={s} value={s}>
+                      {s}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex items-center gap-2">
+                <label className="text-sm text-gray-600 dark:text-gray-400 whitespace-nowrap">Week:</label>
+                <select
+                  value={week || 'all'}
+                  onChange={(e) =>
+                    setWeek(e.target.value === 'all' ? undefined : Number(e.target.value))
+                  }
+                  className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-nfl-primary dark:focus:ring-nfl-accent focus:border-transparent text-sm"
+                >
+                  <option value="all">All Weeks</option>
+                  {weeks.map((w) => (
+                    <option key={w} value={w}>
+                      Week {w}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex items-center gap-2 min-w-[200px]">
+                <label className="text-sm text-gray-600 dark:text-gray-400 whitespace-nowrap">
+                  Min Confidence: {(minConfidence * 100).toFixed(0)}%
+                </label>
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.1"
+                  value={minConfidence}
+                  onChange={(e) => setMinConfidence(Number(e.target.value))}
+                  className="flex-1"
+                />
               </div>
             </div>
-          </div>
+          )}
         </div>
-      </header>
+      </div>
 
       {/* Main Content */}
-      <main className="container mx-auto px-4 py-8">
-        {/* Filters */}
-        <div className="bg-white rounded-lg shadow-md p-6 mb-6">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">Season</label>
-              <select
-                value={season}
-                onChange={(e) => setSeason(Number(e.target.value))}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-nfl-primary"
-              >
-                {seasons.map((s) => (
-                  <option key={s} value={s}>
-                    {s}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">Week (Optional)</label>
-              <input
-                type="number"
-                min="1"
-                max="18"
-                value={week || ''}
-                onChange={(e) =>
-                  setWeek(e.target.value ? Number(e.target.value) : undefined)
-                }
-                placeholder="All weeks"
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-nfl-primary"
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Min Confidence: {(minConfidence * 100).toFixed(0)}%
-              </label>
-              <input
-                type="range"
-                min="0"
-                max="1"
-                step="0.1"
-                value={minConfidence}
-                onChange={(e) => setMinConfidence(Number(e.target.value))}
-                className="w-full"
-              />
-            </div>
-          </div>
-        </div>
-
-        {/* Error Message */}
-        {error && (
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        {/* Model Accuracy Card */}
+        {!loading && (
           <div className="mb-6">
-            <ErrorMessage message={error} onRetry={loadPredictions} />
+            <PredictionAccuracyCard />
+          </div>
+        )}
+
+        {/* Error State */}
+        {error && !loading && (
+          <div className="mb-6">
+            <ErrorState
+              message={error}
+              onRetry={loadPredictions}
+              showPlaceholderInfo={predictions.length > 0}
+            />
+          </div>
+        )}
+
+        {/* Results Count */}
+        {!loading && filteredPredictions.length > 0 && (
+          <div className="mb-6">
+            <p className="text-sm text-gray-600 dark:text-gray-400">
+              {filteredPredictions.length} prediction{filteredPredictions.length !== 1 ? 's' : ''} found
+              {error && <span className="text-gray-400 dark:text-gray-500 ml-2">(placeholder data)</span>}
+            </p>
           </div>
         )}
 
         {/* Predictions */}
         {loading ? (
           <LoadingSpinner />
-        ) : predictions.length === 0 ? (
-          <div className="bg-white rounded-lg shadow-md p-12 text-center">
-            <p className="text-gray-600 text-lg">
-              {error
-                ? 'Unable to load predictions. Make sure the API server is running.'
-                : 'No predictions found for the selected filters.'}
-            </p>
-            {!error && (
-              <p className="text-gray-500 text-sm mt-2">
-                Try adjusting the season, week, or confidence filter.
-              </p>
-            )}
-          </div>
+        ) : filteredPredictions.length === 0 ? (
+          <EmptyState />
         ) : (
-          <>
-            <div className="mb-4">
-              <h2 className="text-xl font-semibold text-gray-800">
-                {predictions.length} Prediction{predictions.length !== 1 ? 's' : ''} Found
-              </h2>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {predictions.map((prediction, index) => (
-                <PredictionCard key={index} prediction={prediction} />
-              ))}
-            </div>
-          </>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+            {filteredPredictions.map((prediction, index) => (
+              <PredictionCard key={index} prediction={prediction} />
+            ))}
+          </div>
         )}
       </main>
 
-      {/* Footer */}
-      <footer className="bg-gray-800 text-white mt-12 py-6">
-        <div className="container mx-auto px-4 text-center text-sm">
-          <p>NFL Game Predictions • Powered by Machine Learning</p>
-          <p className="text-gray-400 mt-2">
-            API: {process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}
+      {/* Minimal Footer */}
+      <footer className="mt-16 border-t border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+          <p className="text-center text-sm text-gray-500 dark:text-gray-400">
+            NFL Game Predictions • Powered by Machine Learning
           </p>
         </div>
       </footer>
     </div>
   );
 }
-
