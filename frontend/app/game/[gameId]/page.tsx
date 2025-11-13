@@ -2,15 +2,17 @@
 
 import { useParams, useRouter } from 'next/navigation';
 import { useState, useEffect } from 'react';
-import { predictionsApi, Prediction } from '@/lib/api';
+import { predictionsApi, Prediction, QBStats, TeamStats, Injury, BettingSpread, TimelineDataPoint, Weather, Stadium } from '@/lib/api';
 import { ArrowLeft, Activity, TrendingUp, AlertCircle, DollarSign } from 'lucide-react';
 import { getTeamName, getTeamLogo, getTeamShortName } from '@/lib/teamLogos';
 import Image from 'next/image';
 import LoadingSpinner from '@/components/LoadingSpinner';
+import ProbabilityTimeline from '@/components/ProbabilityTimeline';
+import WeatherStadium from '@/components/WeatherStadium';
 
 // Placeholder data generator - replace with real API data
 const generatePlaceholderData = (prediction: Prediction) => {
-  const homeQB = {
+  const homeQB: QBStats = {
     name: `${getTeamShortName(prediction.home_team)} QB`,
     team: prediction.home_team,
     qbr: 75 + Math.random() * 20,
@@ -19,7 +21,7 @@ const generatePlaceholderData = (prediction: Prediction) => {
     interceptions: Math.floor(Math.random() * 2),
   };
 
-  const awayQB = {
+  const awayQB: QBStats = {
     name: `${getTeamShortName(prediction.away_team)} QB`,
     team: prediction.away_team,
     qbr: 75 + Math.random() * 20,
@@ -28,30 +30,84 @@ const generatePlaceholderData = (prediction: Prediction) => {
     interceptions: Math.floor(Math.random() * 2),
   };
 
-  const homeTeamStats = {
+  const homeTeamStats: TeamStats = {
     epa: 0.1 + Math.random() * 0.2,
     dvoa: -5 + Math.random() * 20,
     elo: 1500 + Math.random() * 200,
   };
 
-  const awayTeamStats = {
+  const awayTeamStats: TeamStats = {
     epa: 0.1 + Math.random() * 0.2,
     dvoa: -5 + Math.random() * 20,
     elo: 1500 + Math.random() * 200,
   };
 
-  const injuries = [
+  const injuries: Injury[] = [
     { player: 'Sample Player', position: 'WR', status: 'Questionable', impact: 'Medium' },
     { player: 'Another Player', position: 'CB', status: 'Probable', impact: 'Low' },
   ];
 
-  const bettingSpreads = [
+  const bettingSpreads: BettingSpread[] = [
     { source: 'DraftKings', spread: -3.5, overUnder: 48.5 },
     { source: 'FanDuel', spread: -3.0, overUnder: 49.0 },
     { source: 'Caesars', spread: -4.0, overUnder: 48.0 },
   ];
 
-  return { homeQB, awayQB, homeTeamStats, awayTeamStats, injuries, bettingSpreads };
+  // Stadium mapping
+  const stadiumMap: Record<string, Stadium> = {
+    'BUF': { name: 'Highmark Stadium', city: 'Orchard Park', state: 'NY', capacity: 71608, surface: 'FieldTurf', roofType: 'Open' },
+    'MIA': { name: 'Hard Rock Stadium', city: 'Miami Gardens', state: 'FL', capacity: 65326, surface: 'FieldTurf', roofType: 'Open' },
+    'NE': { name: 'Gillette Stadium', city: 'Foxborough', state: 'MA', capacity: 65878, surface: 'FieldTurf', roofType: 'Open' },
+    'NYJ': { name: 'MetLife Stadium', city: 'East Rutherford', state: 'NJ', capacity: 82500, surface: 'FieldTurf', roofType: 'Open' },
+    'NYG': { name: 'MetLife Stadium', city: 'East Rutherford', state: 'NJ', capacity: 82500, surface: 'FieldTurf', roofType: 'Open' },
+    'BAL': { name: 'M&T Bank Stadium', city: 'Baltimore', state: 'MD', capacity: 71008, surface: 'FieldTurf', roofType: 'Open' },
+    'CIN': { name: 'Paycor Stadium', city: 'Cincinnati', state: 'OH', capacity: 65515, surface: 'FieldTurf', roofType: 'Open' },
+    'CLE': { name: 'Cleveland Browns Stadium', city: 'Cleveland', state: 'OH', capacity: 67595, surface: 'FieldTurf', roofType: 'Open' },
+    'PIT': { name: 'Acrisure Stadium', city: 'Pittsburgh', state: 'PA', capacity: 68400, surface: 'Grass', roofType: 'Open' },
+    'HOU': { name: 'NRG Stadium', city: 'Houston', state: 'TX', capacity: 72220, surface: 'FieldTurf', roofType: 'Retractable' },
+    'IND': { name: 'Lucas Oil Stadium', city: 'Indianapolis', state: 'IN', capacity: 67000, surface: 'FieldTurf', roofType: 'Retractable' },
+    'JAX': { name: 'EverBank Stadium', city: 'Jacksonville', state: 'FL', capacity: 67814, surface: 'Grass', roofType: 'Open' },
+    'TEN': { name: 'Nissan Stadium', city: 'Nashville', state: 'TN', capacity: 69143, surface: 'FieldTurf', roofType: 'Open' },
+    'DEN': { name: 'Empower Field at Mile High', city: 'Denver', state: 'CO', capacity: 76125, surface: 'Grass', roofType: 'Open' },
+    'KC': { name: 'GEHA Field at Arrowhead Stadium', city: 'Kansas City', state: 'MO', capacity: 76416, surface: 'Grass', roofType: 'Open' },
+    'LV': { name: 'Allegiant Stadium', city: 'Las Vegas', state: 'NV', capacity: 65000, surface: 'FieldTurf', roofType: 'Dome' },
+    'LAC': { name: 'SoFi Stadium', city: 'Inglewood', state: 'CA', capacity: 70240, surface: 'FieldTurf', roofType: 'Fixed' },
+    'LAR': { name: 'SoFi Stadium', city: 'Inglewood', state: 'CA', capacity: 70240, surface: 'FieldTurf', roofType: 'Fixed' },
+    'DAL': { name: 'AT&T Stadium', city: 'Arlington', state: 'TX', capacity: 80000, surface: 'FieldTurf', roofType: 'Retractable' },
+    'PHI': { name: 'Lincoln Financial Field', city: 'Philadelphia', state: 'PA', capacity: 69596, surface: 'Grass', roofType: 'Open' },
+    'WAS': { name: 'FedExField', city: 'Landover', state: 'MD', capacity: 82000, surface: 'Grass', roofType: 'Open' },
+    'CHI': { name: 'Soldier Field', city: 'Chicago', state: 'IL', capacity: 61500, surface: 'Grass', roofType: 'Open' },
+    'DET': { name: 'Ford Field', city: 'Detroit', state: 'MI', capacity: 65000, surface: 'FieldTurf', roofType: 'Dome' },
+    'GB': { name: 'Lambeau Field', city: 'Green Bay', state: 'WI', capacity: 81441, surface: 'Grass', roofType: 'Open' },
+    'MIN': { name: 'U.S. Bank Stadium', city: 'Minneapolis', state: 'MN', capacity: 66655, surface: 'FieldTurf', roofType: 'Fixed' },
+    'ATL': { name: 'Mercedes-Benz Stadium', city: 'Atlanta', state: 'GA', capacity: 71000, surface: 'FieldTurf', roofType: 'Retractable' },
+    'CAR': { name: 'Bank of America Stadium', city: 'Charlotte', state: 'NC', capacity: 75523, surface: 'Grass', roofType: 'Open' },
+    'NO': { name: 'Caesars Superdome', city: 'New Orleans', state: 'LA', capacity: 73208, surface: 'FieldTurf', roofType: 'Fixed' },
+    'TB': { name: 'Raymond James Stadium', city: 'Tampa', state: 'FL', capacity: 65890, surface: 'Grass', roofType: 'Open' },
+    'ARI': { name: 'State Farm Stadium', city: 'Glendale', state: 'AZ', capacity: 63400, surface: 'FieldTurf', roofType: 'Retractable' },
+    'SF': { name: 'Levi\'s Stadium', city: 'Santa Clara', state: 'CA', capacity: 68500, surface: 'FieldTurf', roofType: 'Open' },
+    'SEA': { name: 'Lumen Field', city: 'Seattle', state: 'WA', capacity: 68000, surface: 'FieldTurf', roofType: 'Open' },
+  };
+
+  const domeStadiums = ['ATL', 'DET', 'IND', 'NO', 'DAL', 'HOU', 'MIN', 'LV', 'LAR', 'LAC'];
+  const isDome = domeStadiums.includes(prediction.home_team);
+
+  const weather: Weather = {
+    temperature: isDome ? 72 : 45 + Math.floor(Math.random() * 40),
+    condition: isDome ? 'Indoor' : ['Sunny', 'Partly Cloudy', 'Cloudy', 'Clear'][Math.floor(Math.random() * 4)],
+    windSpeed: isDome ? 0 : Math.floor(Math.random() * 20),
+    humidity: isDome ? undefined : 40 + Math.floor(Math.random() * 40),
+    precipitation: isDome ? 0 : Math.random() < 0.3 ? Math.floor(Math.random() * 30) : 0,
+    isDome,
+  };
+
+  const stadium = stadiumMap[prediction.home_team] || {
+    name: `${getTeamName(prediction.home_team)} Stadium`,
+    city: 'Unknown',
+    state: 'Unknown',
+  };
+
+  return { homeQB, awayQB, homeTeamStats, awayTeamStats, injuries, bettingSpreads, weather, stadium };
 };
 
 export default function GameDetailPage() {
@@ -61,6 +117,17 @@ export default function GameDetailPage() {
   const [prediction, setPrediction] = useState<Prediction | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [gameDetails, setGameDetails] = useState<{
+    homeQB?: QBStats;
+    awayQB?: QBStats;
+    homeTeamStats?: TeamStats;
+    awayTeamStats?: TeamStats;
+    injuries?: Injury[];
+    bettingSpreads?: BettingSpread[];
+    timeline?: TimelineDataPoint[];
+    weather?: Weather;
+    stadium?: Stadium;
+  } | null>(null);
 
   useEffect(() => {
     // Parse gameId (format: "homeTeam-awayTeam-week-season")
@@ -73,10 +140,50 @@ export default function GameDetailPage() {
 
     const loadGame = async () => {
       try {
-        // Try to get the game from API
-        // For now, we'll use placeholder data
-        // In the future, you can call: predictionsApi.getGamePrediction(homeTeam, awayTeam, season, week)
-        setError('Game data not available from API. Using placeholder data.');
+        const homeTeam = parts[0];
+        const awayTeam = parts[1];
+        const week = parts[2] ? parseInt(parts[2]) : undefined;
+        const season = parts[3] ? parseInt(parts[3]) : undefined;
+
+        // Try to get detailed game data from API
+        const details = await predictionsApi.getGameDetails(homeTeam, awayTeam, season, week);
+        
+        if (details) {
+          // Use real API data
+          setPrediction(details.prediction);
+          setGameDetails({
+            homeQB: details.homeQB,
+            awayQB: details.awayQB,
+            homeTeamStats: details.homeTeamStats,
+            awayTeamStats: details.awayTeamStats,
+            injuries: details.injuries,
+            bettingSpreads: details.bettingSpreads,
+            timeline: details.timeline,
+            weather: details.weather,
+            stadium: details.stadium,
+          });
+          setError(null);
+        } else {
+          // Try to get basic prediction
+          try {
+            const gameData = await predictionsApi.getGamePrediction(homeTeam, awayTeam, season, week);
+            setPrediction(gameData);
+            setError(null);
+          } catch (apiErr) {
+            // API failed, use placeholder
+            setError('Game data not available from API. Using placeholder data.');
+          }
+
+          // Try to get timeline separately
+          try {
+            const timeline = await predictionsApi.getPredictionTimeline(homeTeam, awayTeam, season, week);
+            if (timeline && timeline.length > 0) {
+              setGameDetails((prev) => ({ ...prev, timeline }));
+            }
+          } catch (timelineErr) {
+            // Timeline not available, will use placeholder
+          }
+        }
       } catch (err: any) {
         setError(err.message || 'Failed to load game data');
       } finally {
@@ -165,14 +272,17 @@ export default function GameDetailPage() {
   const homeLogo = getTeamLogo(home_team);
   const awayLogo = getTeamLogo(away_team);
 
-  const {
-    homeQB,
-    awayQB,
-    homeTeamStats,
-    awayTeamStats,
-    injuries,
-    bettingSpreads,
-  } = generatePlaceholderData(currentPrediction);
+  // Use API data if available, otherwise use placeholders
+  const placeholderData = generatePlaceholderData(currentPrediction);
+  const homeQB = gameDetails?.homeQB || placeholderData.homeQB;
+  const awayQB = gameDetails?.awayQB || placeholderData.awayQB;
+  const homeTeamStats = gameDetails?.homeTeamStats || placeholderData.homeTeamStats;
+  const awayTeamStats = gameDetails?.awayTeamStats || placeholderData.awayTeamStats;
+  const injuries = gameDetails?.injuries || placeholderData.injuries;
+  const bettingSpreads = gameDetails?.bettingSpreads || placeholderData.bettingSpreads;
+  const timelineData = gameDetails?.timeline;
+  const weather = gameDetails?.weather || placeholderData.weather;
+  const stadium = gameDetails?.stadium || placeholderData.stadium;
 
   const formatDate = (dateStr?: string) => {
     if (!dateStr) return '';
@@ -252,6 +362,25 @@ export default function GameDetailPage() {
 
           <div className="text-center mt-4 text-sm text-gray-600 dark:text-gray-400">
             Confidence: <span className="font-semibold">{confPercent}%</span>
+          </div>
+        </div>
+
+        {/* Probability Timeline Graph and Weather/Stadium */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6 items-stretch">
+          <div className="lg:col-span-2">
+            <ProbabilityTimeline
+              data={timelineData}
+              homeTeam={homeName}
+              awayTeam={awayName}
+              currentHomeProb={homeProb / 100}
+              currentAwayProb={awayProb / 100}
+            />
+          </div>
+          <div className="lg:col-span-1">
+            <WeatherStadium
+              weather={weather}
+              stadium={stadium}
+            />
           </div>
         </div>
 

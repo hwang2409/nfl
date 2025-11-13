@@ -16,6 +16,7 @@ from pathlib import Path
 import sys
 from datetime import datetime
 import os
+import random
 from contextlib import asynccontextmanager
 
 # Add src to path
@@ -160,6 +161,72 @@ class ModelStatus(BaseModel):
     threshold: Optional[float] = None
     cache_enabled: bool
     cache_connected: bool
+
+
+class TimelineDataPoint(BaseModel):
+    timestamp: str
+    home_win_probability: float = Field(..., ge=0, le=1)
+    away_win_probability: float = Field(..., ge=0, le=1)
+    confidence: float = Field(..., ge=0, le=1)
+
+
+class QBStats(BaseModel):
+    name: str
+    team: str
+    qbr: float
+    passingYards: float
+    touchdowns: int
+    interceptions: int
+
+
+class TeamStats(BaseModel):
+    epa: float
+    dvoa: float
+    elo: float
+
+
+class Injury(BaseModel):
+    player: str
+    position: str
+    status: str
+    impact: str
+
+
+class BettingSpread(BaseModel):
+    source: str
+    spread: float
+    overUnder: float
+
+
+class Weather(BaseModel):
+    temperature: float
+    condition: str
+    windSpeed: float
+    humidity: Optional[float] = None
+    precipitation: Optional[float] = None
+    isDome: bool
+
+
+class Stadium(BaseModel):
+    name: str
+    city: str
+    state: str
+    capacity: Optional[int] = None
+    surface: Optional[str] = None
+    roofType: Optional[str] = None
+
+
+class GameDetails(BaseModel):
+    prediction: PredictionResponse
+    homeQB: Optional[QBStats] = None
+    awayQB: Optional[QBStats] = None
+    homeTeamStats: Optional[TeamStats] = None
+    awayTeamStats: Optional[TeamStats] = None
+    injuries: Optional[List[Injury]] = None
+    bettingSpreads: Optional[List[BettingSpread]] = None
+    timeline: Optional[List[TimelineDataPoint]] = None
+    weather: Optional[Weather] = None
+    stadium: Optional[Stadium] = None
 
 
 # Dependency functions
@@ -501,6 +568,232 @@ async def get_team_upcoming_predictions(
         )
     
     return team_predictions
+
+
+@app.get("/api/v1/predictions/timeline/{home_team}/{away_team}", response_model=List[TimelineDataPoint])
+async def get_prediction_timeline(
+    home_team: str,
+    away_team: str,
+    season: Optional[int] = Query(None, description="Season year"),
+    week: Optional[int] = Query(None, description="Week number"),
+    redis_client: redis.Redis = Depends(get_redis),
+    model: SimpleNFLModel = Depends(get_model)
+):
+    """
+    Get prediction timeline for a specific game.
+    
+    Returns historical probability data points showing how predictions
+    have changed over time. For now, generates synthetic timeline data
+    based on current prediction. In production, this would query historical
+    prediction data from the database.
+    """
+    # Get current prediction
+    try:
+        prediction = await get_game_prediction(
+            home_team=home_team,
+            away_team=away_team,
+            season=season,
+            week=week,
+            redis_client=redis_client,
+            model=model
+        )
+    except HTTPException:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Prediction not found for {away_team} @ {home_team}"
+        )
+    
+    # Check cache for timeline
+    cache_key = f"timeline:{season}:{week}:{home_team}:{away_team}"
+    cached = get_from_cache(cache_key, redis_client)
+    if cached:
+        return cached
+    
+    # Generate timeline data
+    # In production, this would query historical predictions from database
+    # For now, generate synthetic data based on current prediction
+    timeline = []
+    now = datetime.now()
+    current_home_prob = prediction['home_win_probability']
+    current_away_prob = prediction['away_win_probability']
+    current_conf = prediction['confidence']
+    
+    # Generate 30 days of historical data points
+    # More frequent for recent data (hourly for last 24h, then every 6-12 hours)
+    # Last 24 hours: hourly
+    for i in range(24, -1, -1):
+        date = datetime(now.year, now.month, now.day, now.hour - i, 0, 0)
+        variation = (random.random() - 0.5) * 0.06
+        time_factor = i / 24
+        
+        home_prob = max(0.1, min(0.9, current_home_prob + variation * time_factor))
+        away_prob = 1 - home_prob
+        conf = 0.7 + (1 - time_factor) * 0.25
+        
+        timeline.append({
+            "timestamp": date.isoformat(),
+            "home_win_probability": round(home_prob, 2),
+            "away_win_probability": round(away_prob, 2),
+            "confidence": round(conf, 2)
+        })
+    
+    # Days 2-7: every 6 hours
+    for day in range(2, 8):
+        for hour in [0, 6, 12, 18]:
+            date = datetime(now.year, now.month, now.day - day, hour, 0, 0)
+            variation = (random.random() - 0.5) * 0.08
+            time_factor = day / 7
+            
+            home_prob = max(0.1, min(0.9, current_home_prob + variation * time_factor))
+            away_prob = 1 - home_prob
+            conf = 0.65 + (1 - time_factor) * 0.3
+            
+            timeline.append({
+                "timestamp": date.isoformat(),
+                "home_win_probability": round(home_prob, 2),
+                "away_win_probability": round(away_prob, 2),
+                "confidence": round(conf, 2)
+            })
+    
+    # Days 8-30: every 12 hours
+    for day in range(8, 31):
+        for hour in [0, 12]:
+            date = datetime(now.year, now.month, now.day - day, hour, 0, 0)
+            variation = (random.random() - 0.5) * 0.1
+            time_factor = day / 30
+            
+            home_prob = max(0.1, min(0.9, current_home_prob + variation * time_factor))
+            away_prob = 1 - home_prob
+            conf = 0.6 + (1 - time_factor) * 0.35
+            
+            timeline.append({
+                "timestamp": date.isoformat(),
+                "home_win_probability": round(home_prob, 2),
+                "away_win_probability": round(away_prob, 2),
+                "confidence": round(conf, 2)
+            })
+    
+    # Sort by timestamp
+    timeline.sort(key=lambda x: x['timestamp'])
+    
+    # Cache for 1 hour
+    set_cache(cache_key, timeline, ttl=3600, redis_client=redis_client)
+    
+    return timeline
+
+
+@app.get("/api/v1/predictions/game/{home_team}/{away_team}/details", response_model=GameDetails)
+async def get_game_details(
+    home_team: str,
+    away_team: str,
+    season: Optional[int] = Query(None, description="Season year"),
+    week: Optional[int] = Query(None, description="Week number"),
+    redis_client: redis.Redis = Depends(get_redis),
+    model: SimpleNFLModel = Depends(get_model)
+):
+    """
+    Get detailed game information including QB stats, team stats, injuries,
+    betting spreads, and prediction timeline.
+    """
+    # Get base prediction
+    try:
+        prediction = await get_game_prediction(
+            home_team=home_team,
+            away_team=away_team,
+            season=season,
+            week=week,
+            redis_client=redis_client,
+            model=model
+        )
+    except HTTPException:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Prediction not found for {away_team} @ {home_team}"
+        )
+    
+    # Get timeline
+    timeline = await get_prediction_timeline(
+        home_team=home_team,
+        away_team=away_team,
+        season=season,
+        week=week,
+        redis_client=redis_client,
+        model=model
+    )
+    
+    # Get weather and stadium data
+    # Check if dome stadium
+    dome_stadiums = {'ATL', 'DET', 'IND', 'NO', 'DAL', 'HOU', 'MIN', 'LV', 'LAR', 'LAC'}
+    is_dome = home_team in dome_stadiums
+    
+    # Stadium mapping
+    stadium_map = {
+        'BUF': {'name': 'Highmark Stadium', 'city': 'Orchard Park', 'state': 'NY', 'capacity': 71608, 'surface': 'FieldTurf', 'roofType': 'Open'},
+        'MIA': {'name': 'Hard Rock Stadium', 'city': 'Miami Gardens', 'state': 'FL', 'capacity': 65326, 'surface': 'FieldTurf', 'roofType': 'Open'},
+        'NE': {'name': 'Gillette Stadium', 'city': 'Foxborough', 'state': 'MA', 'capacity': 65878, 'surface': 'FieldTurf', 'roofType': 'Open'},
+        'NYJ': {'name': 'MetLife Stadium', 'city': 'East Rutherford', 'state': 'NJ', 'capacity': 82500, 'surface': 'FieldTurf', 'roofType': 'Open'},
+        'NYG': {'name': 'MetLife Stadium', 'city': 'East Rutherford', 'state': 'NJ', 'capacity': 82500, 'surface': 'FieldTurf', 'roofType': 'Open'},
+        'BAL': {'name': 'M&T Bank Stadium', 'city': 'Baltimore', 'state': 'MD', 'capacity': 71008, 'surface': 'FieldTurf', 'roofType': 'Open'},
+        'CIN': {'name': 'Paycor Stadium', 'city': 'Cincinnati', 'state': 'OH', 'capacity': 65515, 'surface': 'FieldTurf', 'roofType': 'Open'},
+        'CLE': {'name': 'Cleveland Browns Stadium', 'city': 'Cleveland', 'state': 'OH', 'capacity': 67595, 'surface': 'FieldTurf', 'roofType': 'Open'},
+        'PIT': {'name': 'Acrisure Stadium', 'city': 'Pittsburgh', 'state': 'PA', 'capacity': 68400, 'surface': 'Grass', 'roofType': 'Open'},
+        'HOU': {'name': 'NRG Stadium', 'city': 'Houston', 'state': 'TX', 'capacity': 72220, 'surface': 'FieldTurf', 'roofType': 'Retractable'},
+        'IND': {'name': 'Lucas Oil Stadium', 'city': 'Indianapolis', 'state': 'IN', 'capacity': 67000, 'surface': 'FieldTurf', 'roofType': 'Retractable'},
+        'JAX': {'name': 'EverBank Stadium', 'city': 'Jacksonville', 'state': 'FL', 'capacity': 67814, 'surface': 'Grass', 'roofType': 'Open'},
+        'TEN': {'name': 'Nissan Stadium', 'city': 'Nashville', 'state': 'TN', 'capacity': 69143, 'surface': 'FieldTurf', 'roofType': 'Open'},
+        'DEN': {'name': 'Empower Field at Mile High', 'city': 'Denver', 'state': 'CO', 'capacity': 76125, 'surface': 'Grass', 'roofType': 'Open'},
+        'KC': {'name': 'GEHA Field at Arrowhead Stadium', 'city': 'Kansas City', 'state': 'MO', 'capacity': 76416, 'surface': 'Grass', 'roofType': 'Open'},
+        'LV': {'name': 'Allegiant Stadium', 'city': 'Las Vegas', 'state': 'NV', 'capacity': 65000, 'surface': 'FieldTurf', 'roofType': 'Dome'},
+        'LAC': {'name': 'SoFi Stadium', 'city': 'Inglewood', 'state': 'CA', 'capacity': 70240, 'surface': 'FieldTurf', 'roofType': 'Fixed'},
+        'LAR': {'name': 'SoFi Stadium', 'city': 'Inglewood', 'state': 'CA', 'capacity': 70240, 'surface': 'FieldTurf', 'roofType': 'Fixed'},
+        'DAL': {'name': 'AT&T Stadium', 'city': 'Arlington', 'state': 'TX', 'capacity': 80000, 'surface': 'FieldTurf', 'roofType': 'Retractable'},
+        'PHI': {'name': 'Lincoln Financial Field', 'city': 'Philadelphia', 'state': 'PA', 'capacity': 69596, 'surface': 'Grass', 'roofType': 'Open'},
+        'WAS': {'name': 'FedExField', 'city': 'Landover', 'state': 'MD', 'capacity': 82000, 'surface': 'Grass', 'roofType': 'Open'},
+        'CHI': {'name': 'Soldier Field', 'city': 'Chicago', 'state': 'IL', 'capacity': 61500, 'surface': 'Grass', 'roofType': 'Open'},
+        'DET': {'name': 'Ford Field', 'city': 'Detroit', 'state': 'MI', 'capacity': 65000, 'surface': 'FieldTurf', 'roofType': 'Dome'},
+        'GB': {'name': 'Lambeau Field', 'city': 'Green Bay', 'state': 'WI', 'capacity': 81441, 'surface': 'Grass', 'roofType': 'Open'},
+        'MIN': {'name': 'U.S. Bank Stadium', 'city': 'Minneapolis', 'state': 'MN', 'capacity': 66655, 'surface': 'FieldTurf', 'roofType': 'Fixed'},
+        'ATL': {'name': 'Mercedes-Benz Stadium', 'city': 'Atlanta', 'state': 'GA', 'capacity': 71000, 'surface': 'FieldTurf', 'roofType': 'Retractable'},
+        'CAR': {'name': 'Bank of America Stadium', 'city': 'Charlotte', 'state': 'NC', 'capacity': 75523, 'surface': 'Grass', 'roofType': 'Open'},
+        'NO': {'name': 'Caesars Superdome', 'city': 'New Orleans', 'state': 'LA', 'capacity': 73208, 'surface': 'FieldTurf', 'roofType': 'Fixed'},
+        'TB': {'name': 'Raymond James Stadium', 'city': 'Tampa', 'state': 'FL', 'capacity': 65890, 'surface': 'Grass', 'roofType': 'Open'},
+        'ARI': {'name': 'State Farm Stadium', 'city': 'Glendale', 'state': 'AZ', 'capacity': 63400, 'surface': 'FieldTurf', 'roofType': 'Retractable'},
+        'SF': {'name': 'Levi\'s Stadium', 'city': 'Santa Clara', 'state': 'CA', 'capacity': 68500, 'surface': 'FieldTurf', 'roofType': 'Open'},
+        'SEA': {'name': 'Lumen Field', 'city': 'Seattle', 'state': 'WA', 'capacity': 68000, 'surface': 'FieldTurf', 'roofType': 'Open'},
+    }
+    
+    stadium_data = stadium_map.get(home_team, {
+        'name': f'{home_team} Stadium',
+        'city': 'Unknown',
+        'state': 'Unknown'
+    })
+    
+    # Generate weather data
+    # In production, this would fetch from weather API
+    weather_data = {
+        'temperature': 72 if is_dome else 45 + random.randint(0, 40),
+        'condition': 'Indoor' if is_dome else random.choice(['Sunny', 'Partly Cloudy', 'Cloudy', 'Clear']),
+        'windSpeed': 0 if is_dome else random.randint(0, 20),
+        'humidity': None if is_dome else 40 + random.randint(0, 40),
+        'precipitation': 0 if is_dome else (random.randint(0, 30) if random.random() < 0.3 else 0),
+        'isDome': is_dome
+    }
+    
+    # For now, return minimal details with timeline, weather, and stadium
+    # In production, this would fetch QB stats, team stats, injuries, betting from database/API
+    return {
+        "prediction": prediction,
+        "timeline": timeline,
+        "weather": weather_data,
+        "stadium": stadium_data,
+        # Placeholder data - replace with real data sources in production
+        "homeQB": None,
+        "awayQB": None,
+        "homeTeamStats": None,
+        "awayTeamStats": None,
+        "injuries": None,
+        "bettingSpreads": None
+    }
 
 
 @app.post("/api/v1/cache/invalidate")

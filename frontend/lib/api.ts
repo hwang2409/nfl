@@ -22,6 +22,72 @@ export interface Prediction {
   confidence: number;
 }
 
+export interface QBStats {
+  name: string;
+  team: string;
+  qbr: number;
+  passingYards: number;
+  touchdowns: number;
+  interceptions: number;
+}
+
+export interface TeamStats {
+  epa: number;
+  dvoa: number;
+  elo: number;
+}
+
+export interface Injury {
+  player: string;
+  position: string;
+  status: string;
+  impact: string;
+}
+
+export interface BettingSpread {
+  source: string;
+  spread: number;
+  overUnder: number;
+}
+
+export interface TimelineDataPoint {
+  timestamp: string;
+  home_win_probability: number;
+  away_win_probability: number;
+  confidence: number;
+}
+
+export interface Weather {
+  temperature: number;
+  condition: string;
+  windSpeed: number;
+  humidity?: number;
+  precipitation?: number;
+  isDome: boolean;
+}
+
+export interface Stadium {
+  name: string;
+  city: string;
+  state: string;
+  capacity?: number;
+  surface?: string;
+  roofType?: string;
+}
+
+export interface GameDetails {
+  prediction: Prediction;
+  homeQB?: QBStats;
+  awayQB?: QBStats;
+  homeTeamStats?: TeamStats;
+  awayTeamStats?: TeamStats;
+  injuries?: Injury[];
+  bettingSpreads?: BettingSpread[];
+  timeline?: TimelineDataPoint[];
+  weather?: Weather;
+  stadium?: Stadium;
+}
+
 export interface ApiResponse<T> {
   success: boolean;
   data?: T;
@@ -84,6 +150,52 @@ export const predictionsApi = {
   }> {
     const response = await api.get('/api/v1/status');
     return response.data;
+  },
+
+  // Get detailed game information (includes QB stats, team stats, injuries, betting, timeline)
+  async getGameDetails(
+    homeTeam: string,
+    awayTeam: string,
+    season?: number,
+    week?: number
+  ): Promise<GameDetails | null> {
+    const params: Record<string, string | number> = {};
+    if (season) params.season = season;
+    if (week) params.week = week;
+
+    try {
+      const response = await api.get(
+        `/api/v1/predictions/game/${homeTeam}/${awayTeam}/details`,
+        { params }
+      );
+      return response.data;
+    } catch (error) {
+      // Endpoint doesn't exist yet, return null to use placeholders
+      return null;
+    }
+  },
+
+  // Get prediction timeline for a specific game
+  async getPredictionTimeline(
+    homeTeam: string,
+    awayTeam: string,
+    season?: number,
+    week?: number
+  ): Promise<TimelineDataPoint[]> {
+    const params: Record<string, string | number> = {};
+    if (season) params.season = season;
+    if (week) params.week = week;
+
+    try {
+      const response = await api.get(
+        `/api/v1/predictions/timeline/${homeTeam}/${awayTeam}`,
+        { params }
+      );
+      return response.data;
+    } catch (error) {
+      // Endpoint doesn't exist yet, return empty array to use placeholders
+      return [];
+    }
   },
 };
 
