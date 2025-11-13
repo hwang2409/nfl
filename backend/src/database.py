@@ -358,3 +358,17 @@ def delete_old_predictions(older_than_days: int = 365):
         
         return deleted
 
+
+def clear_database():
+    """Clear all data from all tables"""
+    with db_session() as session:
+        predictions_deleted = session.query(Prediction).delete()
+        games_deleted = session.query(Game).delete()
+        model_versions_deleted = session.query(ModelVersion).delete()
+        
+        return {
+            'predictions_deleted': predictions_deleted,
+            'games_deleted': games_deleted,
+            'model_versions_deleted': model_versions_deleted
+        }
+

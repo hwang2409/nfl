@@ -4,7 +4,7 @@ FastAPI Server for NFL Prediction API
 This is a production-ready API server that can scale to thousands of users.
 """
 
-from fastapi import FastAPI, HTTPException, Depends, Query
+from fastapi import FastAPI, HTTPException, Depends, Query, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -17,16 +17,17 @@ import sys
 from datetime import datetime
 import os
 from contextlib import asynccontextmanager
+import asyncio
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import pandas as pd
 from src.train_model_v2 import SimpleNFLModel
-from src.predict_upcoming_v2 import predict_upcoming_v2 as predict_upcoming_improved
+from src.predict_upcoming_v2 import predict_upcoming_v2
 from src.database import (
     init_db, get_predictions, get_game_prediction, get_team_predictions,
-    save_predictions, db_session
+    save_predictions, db_session, clear_database
 )
 from data_collection import get_current_season, load_game_data
 
@@ -40,6 +41,112 @@ MODEL_PATH = os.getenv("MODEL_PATH", "models/model_v2.pkl")
 redis_client = None
 model_instance = None
 model_version = None
+
+
+def get_upcoming_weeks(season: int, num_weeks: int = 5) -> List[int]:
+    """Get list of upcoming week numbers for the given season"""
+    try:
+        _, games = load_game_data()  # load_game_data returns (pbp, games) tuple
+        if games is None or len(games) == 0:
+            print("Warning: No game data available, using fallback week calculation")
+            # Fallback: use current calendar week
+            current_week = datetime.now().isocalendar()[1]
+            return list(range(current_week, min(current_week + num_weeks, 19)))
+        
+        # Filter for current season
+        season_games = games[games['season'] == season].copy()
+        if len(season_games) == 0:
+            print(f"Warning: No games found for season {season}")
+            current_week = datetime.now().isocalendar()[1]
+            return list(range(current_week, min(current_week + num_weeks, 19)))
+        
+        # Find current date
+        current_date = datetime.now().strftime('%Y-%m-%d')
+        
+        # Try to find date column
+        date_col = None
+        for col in ['game_date', 'gameday', 'date', 'game_time']:
+            if col in season_games.columns:
+                date_col = col
+                break
+        
+        if date_col:
+            # Get upcoming games
+            upcoming_games = season_games[
+                (season_games[date_col] >= current_date)
+            ].copy()
+            
+            if len(upcoming_games) > 0:
+                # Get unique weeks, sorted
+                weeks = sorted(upcoming_games['week'].unique().tolist())[:num_weeks]
+                return weeks
+        
+        # Fallback: use week column directly
+        current_week = season_games['week'].min()
+        max_week = season_games['week'].max()
+        weeks = list(range(int(current_week), min(int(current_week) + num_weeks, int(max_week) + 1)))
+        return weeks
+        
+    except Exception as e:
+        print(f"Error getting upcoming weeks: {e}")
+        # Fallback
+        current_week = datetime.now().isocalendar()[1]
+        return list(range(current_week, min(current_week + num_weeks, 19)))
+
+
+def compute_predictions_for_week(season: int, week: int, model_version: str):
+    """Compute and save predictions for a specific week"""
+    global redis_client
+    try:
+        print(f"\n[Background] Computing predictions for {season} Week {week}...")
+        predictions_df = predict_upcoming_v2(
+            season=season,
+            week=week,
+            min_confidence=0.0
+        )
+        
+        if predictions_df is not None and len(predictions_df) > 0:
+            # Save to database
+            try:
+                save_predictions(predictions_df, model_version=model_version)
+                print(f"✓ Saved {len(predictions_df)} predictions for Week {week}")
+                
+                # Cache results
+                if redis_client:
+                    cache_key = get_cache_key(season, week)
+                    predictions = []
+                    for _, row in predictions_df.iterrows():
+                        predictions.append({
+                            "season": int(row['season']),
+                            "week": int(row['week']),
+                            "home_team": row['home_team'],
+                            "away_team": row['away_team'],
+                            "home_win_probability": float(row['home_win_probability']),
+                            "away_win_probability": float(row['away_win_probability']),
+                            "predicted_winner": row['predicted_winner'],
+                            "confidence": float(row['confidence']),
+                            "game_date": str(row.get('gameday', '')) if pd.notna(row.get('gameday')) else None,
+                            "gametime": str(row.get('gametime', '')) if pd.notna(row.get('gametime')) else None
+                        })
+                    set_cache(cache_key, predictions, ttl=3600, redis_client=redis_client)
+            except Exception as e:
+                print(f"✗ Error saving predictions for Week {week}: {e}")
+        else:
+            print(f"⚠️  No predictions generated for Week {week}")
+    except Exception as e:
+        print(f"✗ Error computing predictions for Week {week}: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+async def background_predictions_task(season: int, weeks: List[int], model_version: str):
+    """Background task to compute predictions for multiple weeks"""
+    for week in weeks:
+        # Run in executor to avoid blocking
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, compute_predictions_for_week, season, week, model_version)
+        # Small delay between weeks
+        await asyncio.sleep(1)
 
 
 @asynccontextmanager
@@ -82,6 +189,80 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"⚠️  Database initialization failed: {e}")
         print("  API will continue but predictions won't be persisted")
+    
+    # Precompute predictions for next 2 weeks on startup
+    if model_instance is not None:
+        try:
+            current_season = get_current_season()
+            upcoming_weeks = get_upcoming_weeks(current_season, num_weeks=5)
+            
+            if len(upcoming_weeks) > 0:
+                print(f"\n{'='*60}")
+                print("Precomputing Predictions on Startup")
+                print(f"{'='*60}")
+                print(f"Season: {current_season}")
+                print(f"Upcoming weeks: {upcoming_weeks}")
+                
+                # Synchronously compute predictions for first 2 weeks
+                weeks_to_compute_now = upcoming_weeks[:2]
+                weeks_to_compute_background = upcoming_weeks[2:5] if len(upcoming_weeks) > 2 else []
+                
+                print(f"\n[Immediate] Computing predictions for weeks: {weeks_to_compute_now}")
+                for week in weeks_to_compute_now:
+                    try:
+                        print(f"\n[Startup] Computing predictions for {current_season} Week {week}...")
+                        predictions_df = predict_upcoming_v2(
+                            season=current_season,
+                            week=week,
+                            min_confidence=0.0
+                        )
+                        
+                        if predictions_df is not None and len(predictions_df) > 0:
+                            save_predictions(predictions_df, model_version=str(model_version))
+                            print(f"✓ Saved {len(predictions_df)} predictions for Week {week}")
+                            
+                            # Cache results
+                            if redis_client:
+                                cache_key = get_cache_key(current_season, week)
+                                predictions = []
+                                for _, row in predictions_df.iterrows():
+                                    predictions.append({
+                                        "season": int(row['season']),
+                                        "week": int(row['week']),
+                                        "home_team": row['home_team'],
+                                        "away_team": row['away_team'],
+                                        "home_win_probability": float(row['home_win_probability']),
+                                        "away_win_probability": float(row['away_win_probability']),
+                                        "predicted_winner": row['predicted_winner'],
+                                        "confidence": float(row['confidence']),
+                                        "game_date": str(row.get('gameday', '')) if pd.notna(row.get('gameday')) else None,
+                                        "gametime": str(row.get('gametime', '')) if pd.notna(row.get('gametime')) else None
+                                    })
+                                set_cache(cache_key, predictions, ttl=3600, redis_client=redis_client)
+                        else:
+                            print(f"⚠️  No predictions generated for Week {week}")
+                    except Exception as e:
+                        print(f"✗ Error computing predictions for Week {week}: {e}")
+                        import traceback
+                        traceback.print_exc()
+                
+                # Start background task for remaining weeks (3-5)
+                if weeks_to_compute_background:
+                    print(f"\n[Background] Scheduling predictions for weeks: {weeks_to_compute_background}")
+                    asyncio.create_task(background_predictions_task(
+                        current_season, 
+                        weeks_to_compute_background, 
+                        str(model_version)
+                    ))
+                    print("✓ Background prediction tasks started")
+                
+                print(f"\n{'='*60}")
+            else:
+                print("⚠️  No upcoming weeks found")
+        except Exception as e:
+            print(f"⚠️  Error precomputing predictions: {e}")
+            import traceback
+            traceback.print_exc()
     
     yield
     
@@ -198,7 +379,8 @@ async def root():
         "endpoints": {
             "predictions": "/api/v1/predictions/upcoming",
             "status": "/api/v1/status",
-            "health": "/api/v1/health"
+            "health": "/api/v1/health",
+            "clear_database": "/api/v1/database/clear?confirm=true"
         }
     }
 
@@ -300,7 +482,7 @@ async def get_upcoming_predictions(
     
     # Generate predictions (cache miss and database miss)
     try:
-        predictions_df = predict_upcoming_improved(
+        predictions_df = predict_upcoming_v2(
             season=season,
             week=week,
             min_confidence=min_confidence
@@ -481,6 +663,39 @@ async def invalidate_cache(
         raise HTTPException(
             status_code=500,
             detail=f"Error invalidating cache: {str(e)}"
+        )
+
+
+@app.post("/api/v1/database/clear")
+async def clear_db(
+    confirm: bool = Query(False, description="Must be True to confirm database clearing")
+):
+    """
+    Clear all data from the database (admin endpoint).
+    
+    WARNING: This will delete ALL predictions, games, and model versions.
+    This action cannot be undone.
+    
+    Set confirm=True to proceed.
+    """
+    if not confirm:
+        raise HTTPException(
+            status_code=400,
+            detail="Must set confirm=True to clear database. This action cannot be undone."
+        )
+    
+    try:
+        result = clear_database()
+        return {
+            "status": "success",
+            "message": "Database cleared successfully",
+            "deleted": result,
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error clearing database: {str(e)}"
         )
 
 

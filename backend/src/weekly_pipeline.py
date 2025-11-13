@@ -12,8 +12,8 @@ from datetime import datetime
 sys.path.append(str(Path(__file__).parent))
 
 from data_collection import collect_game_data, get_current_season
-from train_improved_model import main as train_model
-from predict_upcoming_improved import predict_upcoming_improved
+from train_model_v2 import main as train_model
+from predict_upcoming_v2 import predict_upcoming_v2
 from evaluate_model import evaluate_model
 from roster_tracking import track_roster_changes, update_player_database_from_changes
 
@@ -71,7 +71,7 @@ def weekly_pipeline(season=None, week=None, snapshot_time='friday_6pm'):
         traceback.print_exc()
     
     # Step 2: Retrain model with new data
-    print("\n[2/5] Retraining improved model...")
+    print("\n[2/5] Retraining V2 model...")
     try:
         train_model()
         print("✓ Model retraining complete")
@@ -94,9 +94,9 @@ def weekly_pipeline(season=None, week=None, snapshot_time='friday_6pm'):
     # Step 4: Generate predictions for upcoming week
     print(f"\n[4/5] Generating predictions for {season} Week {week or 'upcoming'}...")
     try:
-        predictions = predict_upcoming_improved(season=season, week=week, min_confidence=0.0)
+        predictions = predict_upcoming_v2(season=season, week=week, min_confidence=0.0)
         if predictions is not None and len(predictions) > 0:
-            # Display predictions (already done in predict_upcoming_improved)
+            # Display predictions (already done in predict_upcoming_v2)
             
             # Save predictions with timestamp
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -127,13 +127,13 @@ def track_predictions(season, week):
     
     # Try multiple file patterns
     prediction_files = list(DATA_DIR.glob(f"predictions_{season}_week{week}_*.csv"))
-    prediction_files += list(DATA_DIR.glob(f"predictions_improved.csv"))
+    prediction_files += list(DATA_DIR.glob(f"predictions_v2.csv"))
     prediction_files = sorted(set(prediction_files))  # Remove duplicates
     
     if len(prediction_files) == 0:
         print(f"\nNo prediction files found for {season} Week {week}")
         print("\nTo generate predictions, run:")
-        print(f"  python src/predict_upcoming_improved.py --season {season} --week {week}")
+        print(f"  python src/predict_upcoming_v2.py --season {season} --week {week}")
         print("\nOr use the weekly pipeline:")
         print(f"  python src/weekly_pipeline.py --week {week}")
         return

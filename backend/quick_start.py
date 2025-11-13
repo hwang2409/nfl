@@ -15,8 +15,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from data_collection import collect_game_data
-from train_improved_model import main as train_model
-from predict_upcoming_improved import predict_upcoming_improved
+from train_model_v2 import main as train_model
+from predict_upcoming_v2 import predict_upcoming_v2
 
 def main():
     print("=" * 60)
@@ -34,14 +34,14 @@ def main():
         print("Error: Failed to collect data")
         return
     
-    # Step 2: Train improved model
-    print("\n[2/3] Training improved model...")
+    # Step 2: Train V2 model
+    print("\n[2/3] Training V2 model...")
     print("This will prepare features and train the model.")
     train_model()
     
     # Step 3: Make predictions
     print("\n[3/3] Making predictions for upcoming games...")
-    predictions = predict_upcoming_improved()
+    predictions = predict_upcoming_v2()
     
     if predictions is not None and len(predictions) > 0:
         print(f"\n✓ Generated {len(predictions)} predictions")
@@ -53,7 +53,7 @@ def main():
     print("=" * 60)
     print("\nExample commands:")
     print("  # Make predictions for specific week")
-    print("  python src/predict_upcoming_improved.py --season 2024 --week 1")
+    print("  python src/predict_upcoming_v2.py --season 2024 --week 1")
     print("\n  # Evaluate model")
     print("  python src/evaluate_model.py --season 2023")
 

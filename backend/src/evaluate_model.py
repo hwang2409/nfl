@@ -2,7 +2,7 @@
 Model Evaluation and Analysis
 
 Evaluates model accuracy on historical games and provides detailed analysis.
-Uses the improved model as the default.
+Uses the V2 model (model_v2.pkl) as the default.
 """
 
 import pandas as pd
@@ -13,8 +13,15 @@ import sys
 sys.path.append(str(Path(__file__).parent))
 
 from prepare_enhanced_features import prepare_enhanced_features
-from improved_model import ImprovedNFLModel
+from train_model_v2 import SimpleNFLModel, ReinforcementLearner
 from data_collection import get_current_season
+
+# Ensure ReinforcementLearner is available for pickle loading
+# This fixes the AttributeError when loading models with RL
+import sys
+if 'train_model_v2' not in sys.modules:
+    import train_model_v2
+    sys.modules['train_model_v2'] = train_model_v2
 from sklearn.metrics import (
     accuracy_score, confusion_matrix, classification_report,
     log_loss, roc_auc_score, brier_score_loss,
@@ -42,17 +49,22 @@ def evaluate_model(season=None, week=None, min_confidence=0.0):
     print("=" * 70)
     
     # Load model
-    model_path = MODELS_DIR / "improved_model.pkl"
+    model_path = MODELS_DIR / "model_v2.pkl"
     if not model_path.exists():
         print(f"Error: Model not found at {model_path}")
-        print("Please train the model first: python src/train_improved_model.py")
+        print("Please train the model first: python src/train_model_v2.py")
         return None
     
     try:
-        model = ImprovedNFLModel.load(model_path)
-        print(f"Loaded improved model (threshold: {model.threshold:.3f})")
+        model = SimpleNFLModel.load(model_path)
+        print(f"Loaded V2 model (threshold: {model.threshold:.3f})")
+        if hasattr(model, 'use_ensemble') and model.use_ensemble:
+            print(f"  Ensemble: {model.ensemble_method}")
+            print(f"  Base models: {list(model.models.keys()) if hasattr(model, 'models') else 'N/A'}")
     except Exception as e:
         print(f"Error loading model: {e}")
+        import traceback
+        traceback.print_exc()
         return None
     
     # Prepare features
@@ -109,7 +121,9 @@ def evaluate_model(season=None, week=None, min_confidence=0.0):
     
     # Make predictions
     try:
-        y_proba, y_pred = model.predict(X, apply_calibration=True, apply_rules=True)
+        # SimpleNFLModel has different API - predict_proba returns probabilities
+        y_proba = model.predict_proba(X)
+        y_pred = model.predict(X)
     except Exception as e:
         print(f"Error making predictions: {e}")
         import traceback

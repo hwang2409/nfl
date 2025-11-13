@@ -347,6 +347,8 @@ def fetch_player_game_log_cached(player_name, position, season, use_cache=True):
     """
     Fetch player game log with caching.
     
+    Uses the same cache path as pfr_integration.fetch_player_game_log for consistency.
+    
     Args:
         player_name: Player name as it appears on PFR
         position: 'QB', 'RB', 'WR', or 'TE'
@@ -359,25 +361,43 @@ def fetch_player_game_log_cached(player_name, position, season, use_cache=True):
     if not PFR_AVAILABLE or not player_name:
         return None
     
-    # Check cache
-    safe_name = player_name.replace(' ', '_').replace("'", '').replace('.', '')
-    cache_file = DATA_DIR / "pfr" / "players" / f"{safe_name}_{position}_{season}.parquet"
+    # Use the same cache path as pfr_integration.fetch_player_game_log for consistency
+    # This ensures cache is shared between both functions
+    safe_name = player_name.replace(' ', '_')
+    cache_file = DATA_DIR / "pfr" / f"player_{safe_name}_{position}_{season}.parquet"
     cache_file.parent.mkdir(parents=True, exist_ok=True)
     
+    # Always check cache first if use_cache is True
     if use_cache and cache_file.exists():
         try:
-            return pd.read_parquet(cache_file)
-        except:
+            cached_log = pd.read_parquet(cache_file)
+            if cached_log is not None and len(cached_log) > 0:
+                return cached_log
+        except Exception as e:
+            # Cache file might be corrupted, try to fetch fresh
             pass
     
+    # Only fetch if cache doesn't exist or use_cache is False
     try:
         # Fetch from PFR
         game_log = pfr_player.get_player_game_log(player=player_name, position=position, season=season)
         
         if game_log is not None and len(game_log) > 0:
-            # Save to cache
-            game_log.to_parquet(cache_file, index=False)
-            return game_log
+            # Validate the data
+            if isinstance(game_log, pd.DataFrame):
+                # Replace empty strings with NaN
+                game_log = game_log.replace('', np.nan)
+                # Drop rows that are completely empty
+                game_log = game_log.dropna(how='all')
+            
+            if len(game_log) > 0:
+                # Save to cache
+                try:
+                    game_log.to_parquet(cache_file, index=False)
+                except Exception as e:
+                    # If cache save fails, still return the data
+                    pass
+                return game_log
     except Exception as e:
         # Silently fail - many players won't exist or API may have issues
         return None
@@ -608,6 +628,9 @@ def calculate_player_features_for_games(games_df, pbp_data=None, min_season=None
     player_logs = {}  # (team, season, position) -> DataFrame
     
     positions = ['QB', 'RB', 'WR', 'TE']
+    
+    # First pass: Check cache and load cached logs
+    cached_count = 0
     to_fetch = []
     
     for team in teams:
@@ -615,26 +638,38 @@ def calculate_player_features_for_games(games_df, pbp_data=None, min_season=None
             for position in positions:
                 player_name = get_player_name(team, season, position, pbp_data=pbp_data, player_db=player_db)
                 if player_name:
-                    cache_key = (team, season, position, player_name)
-                    safe_name = player_name.replace(' ', '_').replace("'", '').replace('.', '')
-                    cache_file = DATA_DIR / "pfr" / "players" / f"{safe_name}_{position}_{season}.parquet"
+                    # Check cache first
+                    safe_name = player_name.replace(' ', '_')
+                    cache_file = DATA_DIR / "pfr" / f"player_{safe_name}_{position}_{season}.parquet"
                     
                     if cache_file.exists():
                         try:
-                            player_logs[(team, season, position)] = pd.read_parquet(cache_file)
-                        except:
-                            to_fetch.append((team, season, position, player_name))
-                    else:
-                        to_fetch.append((team, season, position, player_name))
+                            cached_log = pd.read_parquet(cache_file)
+                            if cached_log is not None and len(cached_log) > 0:
+                                player_logs[(team, season, position)] = cached_log
+                                cached_count += 1
+                                continue
+                        except Exception:
+                            # Cache file corrupted, will fetch fresh
+                            pass
+                    
+                    # Need to fetch
+                    to_fetch.append((team, season, position, player_name))
     
-    # Fetch uncached player logs
+    # Report cache statistics
+    total_needed = len([(t, s, p) for t in teams for s in seasons for p in positions 
+                       if get_player_name(t, s, p, pbp_data=pbp_data, player_db=player_db)])
+    if cached_count > 0:
+        print(f"  Loaded {cached_count}/{total_needed} player logs from cache")
+    
+    # Second pass: Fetch uncached player logs with progress bar
     if to_fetch:
         print(f"  Fetching {len(to_fetch)} player logs from PFR...")
         for team, season, position, player_name in tqdm(to_fetch, desc="  PFR Player Logs"):
             log = fetch_player_game_log_cached(player_name, position, season, use_cache=False)
             if log is not None:
                 player_logs[(team, season, position)] = log
-            # Rate limiting
+            # Rate limiting to be nice to PFR
             time.sleep(0.5)
     
     # Calculate features for each game
