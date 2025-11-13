@@ -38,7 +38,7 @@ from pfr_integration import calculate_pfr_features_for_games
 from pfr_player_features import calculate_player_features_for_games
 
 
-def prepare_enhanced_features(min_season=None, max_season=None):
+def prepare_enhanced_features(min_season=None, max_season=None, keep_games_without_targets=False):
     """
     Prepare all enhanced features for training.
     
@@ -590,15 +590,35 @@ def prepare_enhanced_features(min_season=None, max_season=None):
         y = y.loc[X.index]
         
         # Remove rows where target is NaN or invalid
+        # UNLESS we want to keep games without targets (for prediction)
         valid_target_mask = ~(pd.isna(y) | np.isinf(y))
-        X = X[valid_target_mask].copy()
-        y = y[valid_target_mask].copy()
         
-        # Ensure y is binary (0 or 1)
-        y = y.astype(int)
-        if not y.isin([0, 1]).all():
-            print("  Warning: Converting non-binary targets to binary")
-            y = (y > 0.5).astype(int)
+        if keep_games_without_targets:
+            # Keep both games with and without targets
+            # For games without targets, set y to NaN (will be filtered out later for training)
+            print(f"  Keeping {valid_target_mask.sum()} games with targets and {(~valid_target_mask).sum()} games without targets")
+            # Don't filter - keep all games
+            # y will have NaN for games without targets, which is fine
+        else:
+            # Training mode: only keep games with valid targets
+            X = X[valid_target_mask].copy()
+            y = y[valid_target_mask].copy()
+        
+        # Ensure y is binary (0 or 1) for games with targets
+        if keep_games_without_targets:
+            # Only convert non-NaN targets to binary
+            y_valid = y[valid_target_mask]
+            if len(y_valid) > 0:
+                y_valid = y_valid.astype(int)
+                if not y_valid.isin([0, 1]).all():
+                    print("  Warning: Converting non-binary targets to binary")
+                    y_valid = (y_valid > 0.5).astype(int)
+                y[valid_target_mask] = y_valid
+        else:
+            y = y.astype(int)
+            if not y.isin([0, 1]).all():
+                print("  Warning: Converting non-binary targets to binary")
+                y = (y > 0.5).astype(int)
     else:
         # Prediction mode: No valid targets (all future games)
         # Fill missing values instead of dropping rows

@@ -100,9 +100,13 @@ def predict_upcoming_v2(season=None, week=None, min_confidence=0.0):
     # Prepare features for all games (including upcoming)
     # The prepare_enhanced_features function will include upcoming games
     # and return None for y when games don't have results
+    # IMPORTANT: We need to include the season with upcoming games
+    # If season is 2025, we need to make sure 2025 games are included
+    print(f"  Preparing features for seasons {min(2018, season - 6)} to {season}")
     X_all, y_all = prepare_enhanced_features(
         min_season=min(2018, season - 6),
-        max_season=season
+        max_season=season,
+        keep_games_without_targets=True  # Keep upcoming games without results
     )
     
     if X_all is None:
@@ -120,40 +124,191 @@ def predict_upcoming_v2(season=None, week=None, min_confidence=0.0):
         if available_cols:
             metadata = X_all[available_cols].copy()
     
+    # Debug: Check what seasons are actually in the feature matrix
+    if metadata is not None and 'season' in metadata.columns:
+        seasons_in_matrix = sorted(metadata['season'].unique())
+        print(f"  Seasons in feature matrix: {seasons_in_matrix}")
+        print(f"  Looking for season: {season}")
+        if season not in seasons_in_matrix:
+            print(f"  ⚠️  WARNING: Season {season} not found in feature matrix!")
+            print(f"     This means upcoming games from {season} are not in the features.")
+            print(f"     The feature preparation may have filtered them out.")
+            print(f"     Will try to match by filtering to games without results (future games)")
+    
     # Strategy 1: Match by game_id if available
     if metadata is not None and 'game_id' in metadata.columns:
         upcoming_game_ids = set()
         if 'game_id' in upcoming_games.columns:
             upcoming_game_ids = set(upcoming_games['game_id'].dropna())
+            print(f"  Found {len(upcoming_game_ids)} unique game_ids in upcoming games")
+            print(f"  Sample game_ids: {list(upcoming_game_ids)[:3]}")
         
         if len(upcoming_game_ids) > 0:
-            upcoming_mask = metadata['game_id'].isin(upcoming_game_ids)
-            X_upcoming = X_all[upcoming_mask].copy()
-            print(f"  Matched {len(X_upcoming)} games by game_id")
+            # Check if any game_ids match
+            metadata_game_ids = set(metadata['game_id'].dropna().unique())
+            print(f"  Found {len(metadata_game_ids)} unique game_ids in metadata")
+            print(f"  Sample metadata game_ids: {list(metadata_game_ids)[:3]}")
+            
+            # Check overlap
+            overlap = upcoming_game_ids & metadata_game_ids
+            print(f"  Overlapping game_ids: {len(overlap)}")
+            
+            if len(overlap) > 0:
+                upcoming_mask = metadata['game_id'].isin(overlap)
+                X_upcoming = X_all[upcoming_mask].copy()
+                print(f"  ✓ Matched {len(X_upcoming)} games by game_id")
+            else:
+                print(f"  ⚠️  No game_id overlap, trying Strategy 2...")
+                # Strategy 2: Match by season, week, home_team, away_team
+                if all(col in metadata.columns for col in ['season', 'week', 'home_team', 'away_team']):
+                    upcoming_mask = pd.Series(False, index=X_all.index)
+                    matches_found = 0
+                    print(f"  Attempting to match {len(upcoming_games)} upcoming games...")
+                    for idx, game in upcoming_games.iterrows():
+                        home = game.get('home_team')
+                        away = game.get('away_team')
+                        s = game.get('season', season)
+                        w = game.get('week')
+                        
+                        # Debug first few games
+                        if idx < 3:
+                            print(f"    Game {idx}: {away} @ {home}, season {s}, week {w}")
+                            print(f"      home type: {type(home)}, away type: {type(away)}, season type: {type(s)}, week type: {type(w)}")
+                        
+                        if pd.notna(home) and pd.notna(away) and pd.notna(s) and pd.notna(w):
+                            # Ensure types match
+                            s = int(s) if pd.notna(s) else s
+                            w = int(w) if pd.notna(w) else w
+                            
+                            match_mask = (
+                                (metadata['home_team'] == home) &
+                                (metadata['away_team'] == away) &
+                                (metadata['season'] == s) &
+                                (metadata['week'] == w)
+                            )
+                            if match_mask.any():
+                                matches_found += 1
+                                if idx < 3:
+                                    print(f"      ✓ Match found!")
+                            else:
+                                # Debug: Show why this match failed (only for first few)
+                                if idx < 3:
+                                    print(f"      ✗ No match found")
+                                    # Check what's actually in metadata for this season/week
+                                    season_week_matches = metadata[
+                                        (metadata['season'] == s) &
+                                        (metadata['week'] == w)
+                                    ]
+                                    if len(season_week_matches) > 0:
+                                        print(f"        Found {len(season_week_matches)} games for season {s}, week {w}")
+                                        print(f"        Sample teams: {season_week_matches[['home_team', 'away_team']].head(3).to_dict('records')}")
+                                        # Check if teams match but something else doesn't
+                                        team_matches = metadata[
+                                            (metadata['home_team'] == home) &
+                                            (metadata['away_team'] == away)
+                                        ]
+                                        if len(team_matches) > 0:
+                                            print(f"        Found {len(team_matches)} games with matching teams (different season/week)")
+                                            print(f"        Sample: {team_matches[['season', 'week', 'home_team', 'away_team']].head(3).to_dict('records')}")
+                                    else:
+                                        print(f"        No games found for season {s}, week {w} in metadata")
+                                        # Check what weeks exist for this season
+                                        season_matches = metadata[metadata['season'] == s]
+                                        if len(season_matches) > 0:
+                                            weeks_in_season = sorted(season_matches['week'].unique())
+                                            print(f"        Weeks available for season {s}: {weeks_in_season}")
+                            upcoming_mask |= match_mask
+                        else:
+                            if idx < 3:
+                                print(f"      ✗ Missing data: home={home}, away={away}, season={s}, week={w}")
+                    
+                    X_upcoming = X_all[upcoming_mask].copy()
+                    print(f"  ✓ Matched {len(X_upcoming)} games by season/week/teams ({matches_found} individual matches)")
+                else:
+                    print(f"  ⚠️  Missing required metadata columns for Strategy 2")
+                    X_upcoming = None
         else:
+            print(f"  ⚠️  No game_ids in upcoming games, trying Strategy 2...")
             # Strategy 2: Match by season, week, home_team, away_team
             if all(col in metadata.columns for col in ['season', 'week', 'home_team', 'away_team']):
                 upcoming_mask = pd.Series(False, index=X_all.index)
-                for _, game in upcoming_games.iterrows():
+                matches_found = 0
+                print(f"  Attempting to match {len(upcoming_games)} upcoming games...")
+                for idx, game in upcoming_games.iterrows():
                     home = game.get('home_team')
                     away = game.get('away_team')
                     s = game.get('season', season)
                     w = game.get('week')
+                    
+                    # Debug first few games
+                    if idx < 3:
+                        print(f"    Game {idx}: {away} @ {home}, season {s}, week {w}")
+                        print(f"      home type: {type(home)}, away type: {type(away)}, season type: {type(s)}, week type: {type(w)}")
+                    
                     if pd.notna(home) and pd.notna(away) and pd.notna(s) and pd.notna(w):
+                        # Ensure types match
+                        s = int(s) if pd.notna(s) else s
+                        w = int(w) if pd.notna(w) else w
+                        
                         match_mask = (
                             (metadata['home_team'] == home) &
                             (metadata['away_team'] == away) &
                             (metadata['season'] == s) &
                             (metadata['week'] == w)
                         )
+                        if match_mask.any():
+                            matches_found += 1
+                            if idx < 3:
+                                print(f"      ✓ Match found!")
+                        else:
+                            # Debug: Show why this match failed (only for first few)
+                            if idx < 3:
+                                print(f"      ✗ No match found")
+                                # Check what's actually in metadata for this season/week
+                                season_week_matches = metadata[
+                                    (metadata['season'] == s) &
+                                    (metadata['week'] == w)
+                                ]
+                                if len(season_week_matches) > 0:
+                                    print(f"        Found {len(season_week_matches)} games for season {s}, week {w}")
+                                    print(f"        Sample teams: {season_week_matches[['home_team', 'away_team']].head(3).to_dict('records')}")
+                                    # Check if teams match but something else doesn't
+                                    team_matches = metadata[
+                                        (metadata['home_team'] == home) &
+                                        (metadata['away_team'] == away)
+                                    ]
+                                    if len(team_matches) > 0:
+                                        print(f"        Found {len(team_matches)} games with matching teams (different season/week)")
+                                        print(f"        Sample: {team_matches[['season', 'week', 'home_team', 'away_team']].head(3).to_dict('records')}")
+                                else:
+                                    print(f"        No games found for season {s}, week {w} in metadata")
+                                    # Check what weeks exist for this season
+                                    season_matches = metadata[metadata['season'] == s]
+                                    if len(season_matches) > 0:
+                                        weeks_in_season = sorted(season_matches['week'].unique())
+                                        print(f"        Weeks available for season {s}: {weeks_in_season}")
                         upcoming_mask |= match_mask
+                    else:
+                        if idx < 3:
+                            print(f"      ✗ Missing data: home={home}, away={away}, season={s}, week={w}")
+                
                 X_upcoming = X_all[upcoming_mask].copy()
-                print(f"  Matched {len(X_upcoming)} games by season/week/teams")
+                print(f"  ✓ Matched {len(X_upcoming)} games by season/week/teams ({matches_found} individual matches)")
+                
+                # If Strategy 2 matched 0 games, fall back to target-based filtering
+                if len(X_upcoming) == 0:
+                    print(f"  ⚠️  Strategy 2 matched 0 games, falling back to target-based filtering...")
+                    if y_all is not None:
+                        games_without_targets = y_all.isna()
+                        X_upcoming = X_all[games_without_targets].copy()
+                        print(f"  ✓ Using target-based filtering: {len(X_upcoming)} games without results")
             else:
-                # Strategy 3: Use target-based filtering
+                print(f"  ⚠️  Missing required metadata columns for Strategy 2")
+                # Strategy 3: Use target-based filtering (games without results)
                 if y_all is not None:
-                    X_upcoming = X_all[y_all.isna()].copy()
-                    print(f"  Using target-based filtering: {len(X_upcoming)} games without results")
+                    games_without_targets = y_all.isna()
+                    X_upcoming = X_all[games_without_targets].copy()
+                    print(f"  ✓ Using target-based filtering: {len(X_upcoming)} games without results")
                 else:
                     # Strategy 4: Filter by season/week if metadata has those
                     if metadata is not None and 'season' in metadata.columns and 'week' in metadata.columns:
@@ -175,8 +330,9 @@ def predict_upcoming_v2(season=None, week=None, min_confidence=0.0):
         # No metadata available - use target-based or season filtering
         print("  Warning: Metadata not available, using fallback methods")
         if y_all is not None:
-            X_upcoming = X_all[y_all.isna()].copy()
-            print(f"  Using target-based filtering: {len(X_upcoming)} games without results")
+            games_without_targets = y_all.isna()
+            X_upcoming = X_all[games_without_targets].copy()
+            print(f"  ✓ Using target-based filtering: {len(X_upcoming)} games without results")
         elif 'season' in X_all.columns and 'week' in X_all.columns:
             if week is not None:
                 X_upcoming = X_all[
