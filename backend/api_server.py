@@ -22,8 +22,8 @@ from contextlib import asynccontextmanager
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import pandas as pd
-from src.improved_model import ImprovedNFLModel
-from src.predict_upcoming_improved import predict_upcoming_improved
+from src.train_model_v2 import SimpleNFLModel
+from src.predict_upcoming_v2 import predict_upcoming_v2 as predict_upcoming_improved
 from src.database import (
     init_db, get_predictions, get_game_prediction, get_team_predictions,
     save_predictions, db_session
@@ -34,7 +34,7 @@ from data_collection import get_current_season, load_game_data
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 REDIS_DB = int(os.getenv("REDIS_DB", 0))
-MODEL_PATH = os.getenv("MODEL_PATH", "models/improved_model.pkl")
+MODEL_PATH = os.getenv("MODEL_PATH", "models/model_v2.pkl")
 
 # Global state
 redis_client = None
@@ -67,7 +67,7 @@ async def lifespan(app: FastAPI):
         if not model_path.exists():
             raise FileNotFoundError(f"Model not found at {model_path}")
         
-        model_instance = ImprovedNFLModel.load(model_path)
+        model_instance = SimpleNFLModel.load(model_path)
         model_version = model_path.stat().st_mtime  # Use file mtime as version
         print(f"✓ Model loaded: {model_path}")
         print(f"  Threshold: {model_instance.threshold:.3f}")
@@ -232,7 +232,7 @@ async def get_upcoming_predictions(
     week: Optional[int] = Query(None, description="Week number (default: upcoming)"),
     min_confidence: float = Query(0.0, ge=0.0, le=1.0, description="Minimum confidence threshold"),
     redis_client: redis.Redis = Depends(get_redis),
-    model: ImprovedNFLModel = Depends(get_model)
+    model: SimpleNFLModel = Depends(get_model)
 ):
     """
     Get predictions for upcoming games.
@@ -353,7 +353,7 @@ async def get_game_prediction(
     season: Optional[int] = Query(None, description="Season year"),
     week: Optional[int] = Query(None, description="Week number"),
     redis_client: redis.Redis = Depends(get_redis),
-    model: ImprovedNFLModel = Depends(get_model)
+    model: SimpleNFLModel = Depends(get_model)
 ):
     """Get prediction for a specific game"""
     # Check cache
@@ -402,7 +402,7 @@ async def get_team_upcoming_predictions(
     team: str,
     season: Optional[int] = Query(None, description="Season year"),
     redis_client: redis.Redis = Depends(get_redis),
-    model: ImprovedNFLModel = Depends(get_model)
+    model: SimpleNFLModel = Depends(get_model)
 ):
     """Get all upcoming predictions for a specific team"""
     # Try database first

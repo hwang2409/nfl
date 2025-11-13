@@ -1185,34 +1185,46 @@ class ImprovedNFLModel:
         return y_proba, y_pred
     
     def _apply_decision_rules(self, y_proba, X):
-        """Apply improved decision rules."""
+        """Apply minimal decision rules - preserve model predictions as much as possible."""
         y_proba = y_proba.copy()
         
-        # Rule 1: Large spreads - moderate confidence
+        # Rule 0: Home bias correction - if mean probability is too high, reduce home advantage
+        # NFL home teams win ~57% of games historically
+        mean_prob = y_proba.mean()
+        if mean_prob > 0.65:
+            # Shrink probabilities toward 0.5 to reduce home bias
+            # More aggressive shrinkage for higher probabilities
+            shrink_factor = 0.7  # Shrink by 30% toward center
+            y_proba = 0.5 + (y_proba - 0.5) * shrink_factor
+        
+        # Rule 1: Only adjust extremely large spreads (>= 16 points) - very rare
+        # This should almost never trigger
         if 'market_spread' in X.columns:
             spread = X['market_spread'].values
-            large_spread_mask = abs(spread) >= 7
+            extreme_spread_mask = abs(spread) >= 16
             favorite_mask = spread < 0
             
-            y_proba[large_spread_mask & favorite_mask] = np.clip(
-                y_proba[large_spread_mask & favorite_mask] * 0.9 + 0.65 * 0.1, 0.55, 0.75
-            )
-            y_proba[large_spread_mask & ~favorite_mask] = np.clip(
-                y_proba[large_spread_mask & ~favorite_mask] * 0.9 + 0.35 * 0.1, 0.25, 0.45
-            )
+            # Minimal adjustment: only for extreme cases
+            if extreme_spread_mask.sum() > 0:
+                y_proba[extreme_spread_mask & favorite_mask] = np.clip(
+                    y_proba[extreme_spread_mask & favorite_mask] * 0.99 + 0.80 * 0.01, 0.75, 0.95
+                )
+                y_proba[extreme_spread_mask & ~favorite_mask] = np.clip(
+                    y_proba[extreme_spread_mask & ~favorite_mask] * 0.99 + 0.20 * 0.01, 0.05, 0.25
+                )
         
-        # Rule 2: Uncertainty dampening - smooth shrinkage
-        distance_from_center = np.abs(y_proba - 0.5)
-        shrink_factor = 1.0 - (distance_from_center / 0.5) ** 1.2 * 0.3
+        # Rule 2: Only clip truly extreme probabilities (> 0.98 or < 0.02)
+        # This prevents impossible probabilities but preserves model signal
+        extreme_high_mask = y_proba > 0.98
+        extreme_low_mask = y_proba < 0.02
         
-        high_mask = y_proba > 0.5
-        low_mask = y_proba < 0.5
+        # Very gentle shrinkage for truly extreme probabilities only
+        y_proba[extreme_high_mask] = 0.98 + (y_proba[extreme_high_mask] - 0.98) * 0.3
+        y_proba[extreme_low_mask] = 0.02 + (y_proba[extreme_low_mask] - 0.02) * 0.3
         
-        y_proba[high_mask] = 0.5 + (y_proba[high_mask] - 0.5) * shrink_factor[high_mask]
-        y_proba[low_mask] = 0.5 - (0.5 - y_proba[low_mask]) * shrink_factor[low_mask]
-        
-        # Ensure valid range
-        y_proba = np.clip(y_proba, 0.25, 0.75)
+        # Very wide valid range: allow probabilities from 0.05 to 0.95
+        # This preserves model signal while preventing impossible probabilities
+        y_proba = np.clip(y_proba, 0.05, 0.95)
         
         return y_proba
     

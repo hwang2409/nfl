@@ -523,12 +523,23 @@ def predict_upcoming_improved(season=None, week=None, min_confidence=0.0):
         # Check if model is biased (all predictions very low or very high)
         # If mean is < 0.3, model is predicting away wins for everything
         # If mean is > 0.7, model is predicting home wins for everything
-        needs_flip = y_proba_raw.mean() < 0.3
+        raw_mean = y_proba_raw.mean()
+        needs_flip = raw_mean < 0.3
+        
+        if raw_mean > 0.75:
+            print(f"  ⚠️  WARNING: Strong home bias in raw predictions (mean: {raw_mean:.3f})")
+            print(f"     Model is heavily favoring home teams. This may indicate:")
+            print(f"     1. Home advantage features are too strong")
+            print(f"     2. Model needs retraining with balanced features")
+            print(f"     3. Features for upcoming games may be incomplete")
+        elif raw_mean < 0.25:
+            print(f"  ⚠️  WARNING: Strong away bias in raw predictions (mean: {raw_mean:.3f})")
+            print(f"     Model appears to be predicting away wins for all games.")
+            print(f"     This may indicate inverted predictions or feature issues.")
+            print(f"     Flipping predictions (1 - prob) to correct bias...")
+        
         if needs_flip:
-            print(f"  Warning: Raw mean probability {y_proba_raw.mean():.3f} is very low.")
-            print(f"  Model appears to be predicting away team wins for all games.")
-            print(f"  This may indicate inverted predictions or feature issues.")
-            print(f"  Flipping predictions (1 - prob) to correct bias...")
+            y_proba_raw = 1 - y_proba_raw
         
         # Now apply decision rules
         y_proba, y_pred = model.predict(X_upcoming, apply_calibration=True, apply_rules=True)
@@ -538,18 +549,50 @@ def predict_upcoming_improved(season=None, week=None, min_confidence=0.0):
             y_proba = 1 - y_proba
             y_pred = 1 - y_pred
         
+        # Apply home bias correction if detected
+        # NFL home teams win ~57% of games, so if mean is > 0.65, we have bias
+        final_mean = y_proba.mean()
+        if final_mean > 0.65:
+            print(f"  ⚠️  Applying home bias correction (mean prob: {final_mean:.3f} -> target: ~0.57)")
+            # Calculate correction factor to bring mean closer to expected home win rate (~0.57)
+            target_mean = 0.57
+            correction_factor = (target_mean - 0.5) / (final_mean - 0.5) if final_mean != 0.5 else 1.0
+            # Apply correction: shrink toward 0.5
+            y_proba = 0.5 + (y_proba - 0.5) * correction_factor
+            # Recalculate predictions
+            y_pred = (y_proba >= model.threshold).astype(int)
+            print(f"     Corrected mean probability: {y_proba.mean():.3f}")
+        
         # Debug: print final statistics
         print(f"  Final probability range: [{y_proba.min():.3f}, {y_proba.max():.3f}]")
         print(f"  Final mean probability: {y_proba.mean():.3f}")
         print(f"  Final std probability: {y_proba.std():.3f}")
         print(f"  Predictions - Home wins: {(y_pred == 1).sum()}, Away wins: {(y_pred == 0).sum()}")
         
+        # Check for remaining bias
+        if y_proba.mean() > 0.70:
+            print(f"  ⚠️  WARNING: Strong home bias still present (mean prob: {y_proba.mean():.3f})")
+            print(f"     Model may need retraining with adjusted home advantage features.")
+        elif y_proba.mean() < 0.30:
+            print(f"  ⚠️  WARNING: Strong away bias detected (mean prob: {y_proba.mean():.3f})")
+            print(f"     This suggests predictions may be inverted or features misaligned.")
+        
         # If all probabilities are still identical, the model truly can't differentiate
         # This happens when too many features are missing/zero
         if y_proba.std() < 0.01:
-            print(f"  Warning: All probabilities are nearly identical (std={y_proba.std():.3f})")
-            print(f"  This suggests insufficient feature information for upcoming games.")
-            print(f"  Consider using historical games with results for better predictions.")
+            print(f"  ⚠️  WARNING: All probabilities are nearly identical (std={y_proba.std():.3f})")
+            print(f"     This suggests insufficient feature information for upcoming games.")
+            print(f"     Consider using historical games with results for better predictions.")
+        
+        # Check if probabilities are clustering at boundaries
+        at_max = (y_proba >= 0.89).sum()
+        at_min = (y_proba <= 0.11).sum()
+        if at_max > len(y_proba) * 0.5:
+            print(f"  ⚠️  WARNING: {at_max}/{len(y_proba)} predictions at maximum (>=0.89)")
+            print(f"     Model is overconfident. Consider retraining with less aggressive calibration.")
+        if at_min > len(y_proba) * 0.5:
+            print(f"  ⚠️  WARNING: {at_min}/{len(y_proba)} predictions at minimum (<=0.11)")
+            print(f"     Decision rules may be too aggressive or model is inverted.")
         
     except Exception as e:
         print(f"Error making predictions: {e}")

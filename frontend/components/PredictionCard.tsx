@@ -47,6 +47,22 @@ export default function PredictionCard({ prediction }: PredictionCardProps) {
   const awayColor = getTeamColor(away_team);
   const confidenceColor = getConfidenceColor(confidence);
 
+  // Ensure probabilities sum to 100% (handle rounding)
+  const homeProb = Math.max(0, Math.min(1, home_win_probability));
+  const awayProb = Math.max(0, Math.min(1, away_win_probability));
+  const totalProb = homeProb + awayProb;
+  
+  // Normalize if they don't sum to 1.0 (due to rounding)
+  const normalizedHomeProb = totalProb > 0 ? homeProb / totalProb : 0.5;
+  const normalizedAwayProb = totalProb > 0 ? awayProb / totalProb : 0.5;
+  
+  // Format as percentages
+  const homeProbPercent = (normalizedHomeProb * 100).toFixed(1);
+  const awayProbPercent = (normalizedAwayProb * 100).toFixed(1);
+  
+  // Confidence is already 0-1, convert to percentage
+  const confidencePercent = (confidence * 100).toFixed(0);
+
   const formatDate = (dateStr?: string) => {
     if (!dateStr) return '';
     try {
@@ -76,7 +92,7 @@ export default function PredictionCard({ prediction }: PredictionCardProps) {
           <span className="text-xs text-gray-500">Confidence</span>
           <div className="flex items-center gap-1">
             <div className={`w-2 h-2 rounded-full ${confidenceColor}`}></div>
-            <span className="text-sm font-semibold">{(confidence * 100).toFixed(0)}%</span>
+            <span className="text-sm font-semibold">{confidencePercent}%</span>
           </div>
         </div>
       </div>
@@ -92,7 +108,7 @@ export default function PredictionCard({ prediction }: PredictionCardProps) {
             <div className="flex-1">
               <div className="font-semibold text-lg">{away_team}</div>
               <div className="text-sm text-gray-600">
-                {(away_win_probability * 100).toFixed(1)}% win probability
+                {awayProbPercent}% win probability
               </div>
             </div>
           </div>
@@ -115,7 +131,7 @@ export default function PredictionCard({ prediction }: PredictionCardProps) {
             <div className="flex-1">
               <div className="font-semibold text-lg">{home_team}</div>
               <div className="text-sm text-gray-600">
-                {(home_win_probability * 100).toFixed(1)}% win probability
+                {homeProbPercent}% win probability
               </div>
             </div>
           </div>
@@ -129,23 +145,44 @@ export default function PredictionCard({ prediction }: PredictionCardProps) {
 
       {/* Probability Bars */}
       <div className="mt-4 pt-4 border-t">
-        <div className="flex gap-2">
-          <div className="flex-1">
-            <div className="text-xs text-gray-600 mb-1">{away_team}</div>
-            <div className="w-full bg-gray-200 rounded-full h-2">
+        <div className="space-y-2">
+          <div>
+            <div className="flex justify-between text-xs text-gray-600 mb-1">
+              <span>{away_team}</span>
+              <span className="font-semibold">{awayProbPercent}%</span>
+            </div>
+            <div className="w-full bg-gray-200 rounded-full h-3">
               <div
-                className="bg-blue-600 h-2 rounded-full transition-all"
-                style={{ width: `${away_win_probability * 100}%` }}
+                className="bg-blue-600 h-3 rounded-full transition-all"
+                style={{ width: `${awayProbPercent}%` }}
               ></div>
             </div>
           </div>
-          <div className="flex-1">
-            <div className="text-xs text-gray-600 mb-1">{home_team}</div>
-            <div className="w-full bg-gray-200 rounded-full h-2">
+          <div>
+            <div className="flex justify-between text-xs text-gray-600 mb-1">
+              <span>{home_team}</span>
+              <span className="font-semibold">{homeProbPercent}%</span>
+            </div>
+            <div className="w-full bg-gray-200 rounded-full h-3">
               <div
-                className="bg-red-600 h-2 rounded-full transition-all"
-                style={{ width: `${home_win_probability * 100}%` }}
+                className="bg-red-600 h-3 rounded-full transition-all"
+                style={{ width: `${homeProbPercent}%` }}
               ></div>
+            </div>
+          </div>
+        </div>
+        {/* Confidence indicator */}
+        <div className="mt-3 pt-3 border-t">
+          <div className="flex items-center justify-between text-xs">
+            <span className="text-gray-600">Model Confidence:</span>
+            <div className="flex items-center gap-2">
+              <div className={`w-3 h-3 rounded-full ${confidenceColor}`}></div>
+              <span className="font-semibold text-gray-800">
+                {confidencePercent}% 
+                {confidence >= 0.7 && ' (High)'}
+                {confidence >= 0.4 && confidence < 0.7 && ' (Medium)'}
+                {confidence < 0.4 && ' (Low)'}
+              </span>
             </div>
           </div>
         </div>

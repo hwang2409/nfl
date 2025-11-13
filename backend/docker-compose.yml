@@ -40,7 +40,7 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: 6379
       REDIS_DB: 0
-      MODEL_PATH: models/improved_model.pkl
+      MODEL_PATH: models/model_v2.pkl
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
       POSTGRES_DB: nfl_predictions
